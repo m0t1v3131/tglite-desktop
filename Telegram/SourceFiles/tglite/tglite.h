@@ -12,11 +12,12 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26101415;
+inline constexpr auto kBuild = 26101416;
 
 void Start();
 void Stop();
 void CheckUpdates(bool manual);
+[[nodiscard]] bool HideStories(); // по умолчанию да, меняется в окне Plume, действует после перезапуска
 void ShowSettingsBox(not_null<Window::SessionController*> controller);
 
 } // namespace TgLite

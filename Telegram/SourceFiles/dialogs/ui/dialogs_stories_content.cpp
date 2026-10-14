@@ -28,6 +28,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/dynamic_thumbnails.h"
 #include "ui/painter.h"
 #include "window/window_session_controller.h"
+#include "tglite/tglite.h"
 #include "styles/style_menu_icons.h"
 
 namespace Dialogs::Stories {
@@ -94,6 +95,10 @@ Content State::next() {
 rpl::producer<Content> ContentForSession(
 		not_null<Main::Session*> session,
 		Data::StorySourcesList list) {
+	if (TgLite::HideStories()) {
+		// Plume: истории скрыты — полоса над чатами пустая.
+		return rpl::single(Content());
+	}
 	return [=](auto consumer) {
 		auto result = rpl::lifetime();
 		const auto stories = &session->data().stories();

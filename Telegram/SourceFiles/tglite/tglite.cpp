@@ -543,6 +543,12 @@ void OfferUpdate(const QString &url, const QString &notes) {
 
 } // namespace
 
+bool HideStories() {
+	const auto state = ReadState();
+	return !state.contains(u"hideStories"_q)
+		|| state.value(u"hideStories"_q).toBool();
+}
+
 void CheckUpdates(bool manual) {
 	auto request = QNetworkRequest(QUrl(QString(kUpdateUrl)));
 	request.setTransferTimeout(15000);
@@ -644,6 +650,13 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				}));
 			});
 		}
+		const auto stories = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Скрыть истории (после перезапуска)"_q,
+			HideStories()));
+		stories->checkedChanges() | rpl::on_next([](bool checked) {
+			SetState(u"hideStories"_q, checked);
+		}, stories->lifetime());
 		box->addRow(object_ptr<Ui::LinkButton>(
 			box,
 			u"Проверить обновления"_q))->setClickedCallback([] {
