@@ -39,6 +39,8 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include <QtCore/QJsonObject>
 #include <QtCore/QProcess>
 #include <QtCore/QUrlQuery>
+#include <QtGui/QClipboard>
+#include <QtGui/QGuiApplication>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
@@ -659,6 +661,17 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		stories->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"hideStories"_q, checked);
 		}, stories->lifetime());
+		box->addRow(object_ptr<Ui::LinkButton>(
+			box,
+			u"Скопировать ключ помощника (для телефона)"_q))->setClickedCallback([=] {
+			const auto key = ReadState().value(u"aiKey"_q).toString();
+			if (key.isEmpty()) {
+				controller->showToast(u"Ключа ещё нет — откройте помощника и введите его"_q);
+				return;
+			}
+			QGuiApplication::clipboard()->setText(key);
+			controller->showToast(u"Ключ скопирован — вставьте его в Plume на телефоне"_q);
+		});
 		box->addRow(object_ptr<Ui::LinkButton>(
 			box,
 			u"Проверить обновления"_q))->setClickedCallback([] {
