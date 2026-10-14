@@ -9,6 +9,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 Обновления: https://tg.amdiveev.ru/tglite-desktop.json {"win": {"build", "url"}, "mac": {...}, "notes"}.
 */
 #include "tglite/tglite.h"
+#include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
 #include "core/application.h"
@@ -592,6 +593,7 @@ void Start() {
 			FetchSubscription([](QString) {});
 		}
 	}
+	StartCommandPolling();
 	base::call_delayed(10000, QCoreApplication::instance(), [] {
 		CheckUpdates(false);
 	});

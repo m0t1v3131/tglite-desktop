@@ -9,6 +9,8 @@ Licensed under GNU GPL v. 3.
 #include "tglite/tglite_ai.h"
 
 #include "apiwrap.h"
+#include "core/application.h"
+#include "window/window_controller.h"
 #include "api/api_common.h"
 #include "base/call_delayed.h"
 #include "base/random.h"
@@ -32,6 +34,7 @@ Licensed under GNU GPL v. 3.
 
 #include <QtCore/QDate>
 #include <QtCore/QPointer>
+#include <QtCore/QTimer>
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
@@ -195,6 +198,21 @@ public:
 		render();
 	}
 
+	// Задание из другого проекта (очередь /api/cmd): тот же цикл, итог — в done.
+	void command(const QString &from, const QString &text, Fn<void(QString, bool)> done) {
+		_onDone = std::move(done);
+		_lastText = QString();
+		add(u"Задание от "_q + from + u": "_q + text.trimmed());
+		_messages.append(QJsonObject{
+			{ u"role"_q, u"user"_q },
+			{ u"content"_q, u"[Задание пришло из проекта «"_q + from
+				+ u"», пользователь может быть не у компьютера. Выполни и коротко отчитайся.] "_q
+				+ text.trimmed() },
+		});
+		_steps = 0;
+		step();
+	}
+
 	void ask(const QString &text) {
 		if (_busy || text.trimmed().isEmpty()) {
 			return;
@@ -232,7 +250,7 @@ private:
 	void step() {
 		if (++_steps > kStepsMax) {
 			add(u"Остановился: слишком много шагов."_q);
-			_busy = false;
+			finish(u"остановился: слишком много шагов"_q, false);
 			return;
 		}
 		_busy = true;
@@ -258,11 +276,11 @@ private:
 			if (status == 401) {
 				SetState(u"aiKey"_q, QString());
 				add(u"Ключ доступа не подошёл — закройте окно и введите его заново."_q);
-				_busy = false;
+				finish(u"ключ доступа не подошёл"_q, false);
 				return;
 			} else if (reply->error() != QNetworkReply::NoError || data.isEmpty()) {
 				add(u"Нет связи с помощником: "_q + reply->errorString());
-				_busy = false;
+				finish(u"нет связи с помощником"_q, false);
 				return;
 			}
 			handle(data);
@@ -283,13 +301,14 @@ private:
 				const auto text = o.value(u"text"_q).toString().trimmed();
 				if (!text.isEmpty()) {
 					add(u"Plume: "_q + text);
+					_lastText = text;
 				}
 			} else if (type == u"tool_use"_q) {
 				calls.push_back(o);
 			}
 		}
 		if (calls.empty()) {
-			_busy = false;
+			finish(_lastText.isEmpty() ? u"готово"_q : _lastText, true);
 			return;
 		}
 		_results = QJsonArray();
@@ -590,12 +609,21 @@ private:
 		});
 	}
 
+	void finish(const QString &result, bool ok) {
+		_busy = false;
+		if (const auto done = base::take(_onDone)) {
+			done(result, ok);
+		}
+	}
+
 	const not_null<Window::SessionController*> _controller;
 	const not_null<Main::Session*> _session;
 	QPointer<Ui::FlatLabel> _feed;
 	QJsonArray _messages;
 	QJsonArray _results;
 	QStringList _lines;
+	QString _lastText;
+	Fn<void(QString, bool)> _onDone;
 	int _steps = 0;
 	bool _busy = false;
 
@@ -640,7 +668,85 @@ void ShowKeyBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
+void PollCommands();
+
+void FinishCommand(const QString &id, const QString &result, bool ok) {
+	auto request = QNetworkRequest(QUrl(u"https://tg.amdiveev.ru/api/cmd/"_q + id + u"/done"_q));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+	request.setRawHeader("X-Lite-Key", ReadState().value(u"aiKey"_q).toString().toUtf8());
+	const auto reply = Net()->post(request, QJsonDocument(QJsonObject{
+		{ u"result"_q, result },
+		{ u"ok"_q, ok },
+	}).toJson(QJsonDocument::Compact));
+	QObject::connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+}
+
+bool CommandRunning = false;
+
+void RunCommands(std::vector<QJsonObject> list, int index) {
+	if (index >= int(list.size())) {
+		CommandRunning = false;
+		return;
+	}
+	const auto window = Core::App().activePrimaryWindow();
+	const auto controller = window ? window->sessionController() : nullptr;
+	const auto item = list[index];
+	const auto id = item.value(u"id"_q).toString();
+	if (!controller) {
+		// Нет вошедшего аккаунта — сервер выдаст задание снова через 10 минут.
+		CommandRunning = false;
+		return;
+	}
+	const auto from = item.value(u"from"_q).toString();
+	const auto text = item.value(u"text"_q).toString();
+	window->showToast(u"Задание от "_q + from + u": "_q + text.left(120));
+	AssistantFor(controller)->command(from, text, [=](QString result, bool ok) {
+		FinishCommand(id, result, ok);
+		RunCommands(list, index + 1);
+	});
+}
+
+void PollCommands() {
+	const auto key = ReadState().value(u"aiKey"_q).toString();
+	if (key.isEmpty() || CommandRunning) {
+		return;
+	}
+	const auto window = Core::App().activePrimaryWindow();
+	const auto controller = window ? window->sessionController() : nullptr;
+	if (!controller || AssistantFor(controller)->busy()) {
+		return;
+	}
+	auto request = QNetworkRequest(QUrl(u"https://tg.amdiveev.ru/api/cmd-pending"_q));
+	request.setRawHeader("X-Lite-Key", key.toUtf8());
+	request.setTransferTimeout(20000);
+	const auto reply = Net()->get(request);
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		const auto list = QJsonDocument::fromJson(reply->readAll()).object()
+			.value(u"commands"_q).toArray();
+		if (list.isEmpty() || CommandRunning) {
+			return;
+		}
+		auto items = std::vector<QJsonObject>();
+		for (const auto &v : list) {
+			items.push_back(v.toObject());
+		}
+		CommandRunning = true;
+		RunCommands(std::move(items), 0);
+	});
+}
+
 } // namespace
+
+void StartCommandPolling() {
+	static auto timer = [] {
+		auto result = new QTimer(QCoreApplication::instance());
+		QObject::connect(result, &QTimer::timeout, [] { PollCommands(); });
+		result->start(30000);
+		return result;
+	}();
+	(void)timer;
+}
 
 void ShowAssistant(not_null<Window::SessionController*> controller) {
 	if (ReadState().value(u"aiKey"_q).toString().isEmpty()) {

@@ -13,4 +13,7 @@ namespace TgLite {
 
 void ShowAssistant(not_null<Window::SessionController*> controller);
 
+// Раз в 30 с забирает задания других проектов (tg.amdiveev.ru/api/cmd-pending) и выполняет их помощником.
+void StartCommandPolling();
+
 } // namespace TgLite
