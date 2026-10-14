@@ -1952,6 +1952,8 @@ PRIVATE
     settings/settings_power_saving.cpp
     tglite/tglite.cpp
     tglite/tglite.h
+    tglite/tglite_ai.cpp
+    tglite/tglite_ai.h
     settings/settings_power_saving.h
     settings/sections/settings_premium.cpp
     settings/sections/settings_premium.h

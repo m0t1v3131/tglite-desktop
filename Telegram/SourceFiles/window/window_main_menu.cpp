@@ -5,6 +5,8 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
+#include "tglite/tglite.h"
+#include "tglite/tglite_ai.h"
 #include "window/window_main_menu.h"
 
 #include "apiwrap.h"
@@ -388,8 +390,8 @@ MainMenu::MainMenu(
 	parentResized();
 
 	_telegram->setMarkedText(tr::link(
-		u"Telegram Desktop"_q,
-		u"https://desktop.telegram.org"_q));
+		u"Plume"_q,
+		u"https://tg.amdiveev.ru"_q));
 	_telegram->setLinksTrusted();
 	// The canary version is too long for the "Version {version}" form.
 	_version->setMarkedText(
@@ -399,7 +401,9 @@ MainMenu::MainMenu(
 				: tr::lng_settings_current_version(
 					tr::now,
 					lt_version,
-					currentVersionShortText()),
+					currentVersionShortText()
+						+ u" · Plume "_q
+						+ QString::number(TgLite::kBuild)),
 			1) // Link 1.
 		.append(QChar(' '))
 		.append(QChar(8211))
@@ -772,6 +776,18 @@ void MainMenu::setupMenu() {
 		{ &st::menuIconSettings }
 	)->setClickedCallback([=] {
 		controller->showSettings();
+	});
+	addAction(
+		rpl::single(u"Помощник Plume (ИИ)"_q),
+		{ &st::menuIconBotCommands }
+	)->setClickedCallback([=] {
+		TgLite::ShowAssistant(controller);
+	});
+	addAction(
+		rpl::single(u"Plume: VPN и обновления"_q),
+		{ &st::menuIconExperimental }
+	)->setClickedCallback([=] {
+		TgLite::ShowSettingsBox(controller);
 	});
 
 	_nightThemeToggle = addAction(
