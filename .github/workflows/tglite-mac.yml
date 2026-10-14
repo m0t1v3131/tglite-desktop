@@ -1,6 +1,6 @@
-# TG Lite для Mac (Apple Silicon): Telegram Desktop + патч TG Lite (VPN через xray, своё обновление).
-# Готовый TG-Lite-Mac.zip — артефакт сборки; на tg.amdiveev.ru его выкладывают с ПК (desktop-native в m0t1v3131/tg-lite).
-name: TG Lite Mac
+# Plume (бывш. TG Lite) для Mac (Apple Silicon): Telegram Desktop + патч TG Lite (VPN через xray, своё обновление).
+# Готовый Plume-Mac.zip — артефакт сборки; на tg.amdiveev.ru его выкладывают с ПК (desktop-native в m0t1v3131/tg-lite).
+name: Plume Mac
 
 on:
   push:
@@ -71,16 +71,18 @@ jobs:
           cd $REPO_NAME/out/Release
           curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-macos-arm64-v8a.zip"
           unzip -o -q xray.zip xray -d xray-dir
-          mv Telegram.app "TG Lite.app"
-          cp xray-dir/xray "TG Lite.app/Contents/MacOS/xray"
-          chmod +x "TG Lite.app/Contents/MacOS/xray"
-          codesign --force --deep -s - "TG Lite.app"
+          mv Telegram.app Plume.app
+          plutil -replace CFBundleName -string Plume Plume.app/Contents/Info.plist
+          plutil -replace CFBundleDisplayName -string Plume Plume.app/Contents/Info.plist
+          cp xray-dir/xray Plume.app/Contents/MacOS/xray
+          chmod +x Plume.app/Contents/MacOS/xray
+          codesign --force --deep -s - Plume.app
           mkdir artifact
-          ditto -c -k --sequesterRsrc --keepParent "TG Lite.app" artifact/TG-Lite-Mac.zip
+          ditto -c -k --sequesterRsrc --keepParent Plume.app artifact/Plume-Mac.zip
           echo "$TGLITE_BUILD" > artifact/build.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TG-Lite-Mac
+          name: Plume-Mac
           path: ${{ env.REPO_NAME }}/out/Release/artifact/
           retention-days: 5

@@ -460,7 +460,7 @@ void FetchSubscription(Fn<void(QString error)> done) {
 void InstallUpdate(const QString &url) {
 	const auto window = Core::App().activePrimaryWindow();
 	if (window) {
-		window->showToast(u"Скачиваю обновление TG Lite…"_q);
+		window->showToast(u"Скачиваю обновление Plume…"_q);
 	}
 	auto request = QNetworkRequest(QUrl(url));
 	request.setAttribute(
@@ -533,7 +533,7 @@ void OfferUpdate(const QString &url, const QString &notes) {
 		return;
 	}
 	window->show(Ui::MakeConfirmBox({
-		.text = u"Доступна новая версия TG Lite."_q
+		.text = u"Доступна новая версия Plume."_q
 			+ (notes.isEmpty() ? QString() : (u"\n\n"_q + notes)),
 		.confirmed = [=](Fn<void()> close) { close(); InstallUpdate(url); },
 		.confirmText = u"Обновить"_q,
@@ -566,7 +566,7 @@ void CheckUpdates(bool manual) {
 				platform.value(u"url"_q).toString(),
 				info.value(u"notes"_q).toString());
 		} else if (manual && window) {
-			window->showToast(u"У вас последняя версия TG Lite"_q);
+			window->showToast(u"У вас последняя версия Plume"_q);
 		}
 	});
 }
@@ -597,7 +597,7 @@ void Stop() {
 
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"TG Lite"_q));
+		box->setTitle(rpl::single(u"Plume"_q));
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
 			u"VPN StealthSurf: Telegram работает через вашу подписку, остальные программы не затрагиваются. "
