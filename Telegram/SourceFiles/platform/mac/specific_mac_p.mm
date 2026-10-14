@@ -314,7 +314,8 @@ QString objc_documentsPath() {
 QString objc_appDataPath() {
 	NSURL *url = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
 	if (url) {
-		return QString::fromUtf8([[url path] fileSystemRepresentation]) + '/' + AppName.utf16() + '/';
+		// TG Lite: своя папка данных, чтобы не пересекаться с официальным Telegram Desktop.
+		return QString::fromUtf8([[url path] fileSystemRepresentation]) + u"/TG Lite/"_q;
 	}
 	return QString();
 }

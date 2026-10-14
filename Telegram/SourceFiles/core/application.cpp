@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/application.h"
+#include "tglite/tglite.h"
 
 #include "data/data_abstract_structure.h"
 #include "data/data_channel.h"
@@ -258,6 +259,7 @@ void Application::closeAdditionalWindows() {
 }
 
 Application::~Application() {
+	TgLite::Stop();
 	if (_savedWindows) {
 		_savedWindows->writeNow();
 	}
@@ -480,6 +482,8 @@ void Application::run() {
 
 	Test::Fire(u"launch_finished"_q);
 	Test::Start();
+
+	TgLite::Start();
 }
 
 void Application::autoRegisterUrlScheme() {

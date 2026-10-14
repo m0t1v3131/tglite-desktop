@@ -1950,6 +1950,8 @@ PRIVATE
     settings/sections/settings_passkeys.cpp
     settings/sections/settings_passkeys.h
     settings/settings_power_saving.cpp
+    tglite/tglite.cpp
+    tglite/tglite.h
     settings/settings_power_saving.h
     settings/sections/settings_premium.cpp
     settings/sections/settings_premium.h

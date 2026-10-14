@@ -1,0 +1,86 @@
+# TG Lite для Mac (Apple Silicon): Telegram Desktop + патч TG Lite (VPN через xray, своё обновление).
+# Готовый TG-Lite-Mac.zip — артефакт сборки; на tg.amdiveev.ru его выкладывают с ПК (desktop-native в m0t1v3131/tg-lite).
+name: TG Lite Mac
+
+on:
+  push:
+    branches: [tglite]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 350
+    env:
+      PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+      XRAY_VERSION: "26.9.30"
+
+    steps:
+      - name: Get repository name.
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Clone.
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: ${{ env.REPO_NAME }}
+
+      - name: First set up.
+        run: |
+          sudo chown -R `whoami`:admin /usr/local/share
+          brew update
+          brew install automake libtool meson nasm ninja pkg-config || true
+          sudo mdutil -a -i off || true
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Libraries cache.
+        uses: actions/cache@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: ${{ runner.OS }}-tglite-libs-${{ hashFiles(format('{0}/{1}', env.REPO_NAME, env.PREPARE_PATH)) }}
+          restore-keys: ${{ runner.OS }}-tglite-libs-
+
+      - name: Libraries.
+        run: ./$REPO_NAME/Telegram/build/prepare/mac.sh skip-release silent
+
+      - name: Free up some disk space.
+        run: find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
+
+      - name: TG Lite build.
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          cd $REPO_NAME/Telegram
+          BUILD=$(date -u +%y%m%d%H)
+          echo "TGLITE_BUILD=$BUILD" >> $GITHUB_ENV
+          sed -i '' "s/inline constexpr auto kBuild = [0-9]*;/inline constexpr auto kBuild = $BUILD;/" SourceFiles/tglite/tglite.h
+          ./configure.sh \
+            -D CMAKE_CONFIGURATION_TYPES=Release \
+            -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -D TDESKTOP_API_ID=$TG_API_ID \
+            -D TDESKTOP_API_HASH=$TG_API_HASH \
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+          cmake --build ../out --config Release --parallel
+
+      - name: Package.
+        run: |
+          cd $REPO_NAME/out/Release
+          curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-macos-arm64-v8a.zip"
+          unzip -o -q xray.zip xray -d xray-dir
+          mv Telegram.app "TG Lite.app"
+          cp xray-dir/xray "TG Lite.app/Contents/MacOS/xray"
+          chmod +x "TG Lite.app/Contents/MacOS/xray"
+          codesign --force --deep -s - "TG Lite.app"
+          mkdir artifact
+          ditto -c -k --sequesterRsrc --keepParent "TG Lite.app" artifact/TG-Lite-Mac.zip
+          echo "$TGLITE_BUILD" > artifact/build.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TG-Lite-Mac
+          path: ${{ env.REPO_NAME }}/out/Release/artifact/
+          retention-days: 5
