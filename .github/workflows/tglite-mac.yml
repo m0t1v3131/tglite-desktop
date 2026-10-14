@@ -33,8 +33,9 @@ jobs:
           sudo mdutil -a -i off || true
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Libraries cache.
-        uses: actions/cache@v4
+      - name: Libraries cache (restore).
+        id: libs-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             Libraries
@@ -45,10 +46,21 @@ jobs:
       - name: Libraries.
         run: ./$REPO_NAME/Telegram/build/prepare/mac.sh skip-release silent
 
+      # Освобождаем место, но исходники, которые библиотеки отдают в сборку (local/src, напр. wallet_engine.cpp), не трогаем.
       - name: Free up some disk space.
-        run: find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
+        run: find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/local/src/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
-      - name: TG Lite build.
+      # Кэш сохраняем сразу — даже если сборка программы ниже упадёт, библиотеки (≈3 ч) не придётся собирать заново.
+      - name: Libraries cache (save).
+        if: steps.libs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: ${{ runner.OS }}-tglite-libs-${{ hashFiles(format('{0}/{1}', env.REPO_NAME, env.PREPARE_PATH)) }}
+
+      - name: Plume build.
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
