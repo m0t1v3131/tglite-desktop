@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_widget.h"
+#include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
 #include "base/qt/qt_key_modifiers.h"
@@ -95,6 +96,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_values.h"
 #include "info/info_memento.h"
 #include "inline_bots/bot_attach_web_view.h"
+#include "styles/style_menu_icons.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_chat.h"
 #include "styles/style_chat_helpers.h"
@@ -678,6 +680,17 @@ Widget::Widget(
 	) | rpl::on_next([=] {
 		updateLockUnlockVisibility();
 	}, lifetime());
+	if (_layout != Layout::Child) {
+		_plume.create(_searchControls, st::dialogsLock);
+		_plume->setIconOverride(
+			&st::menuIconBotCommands,
+			&st::menuIconBotCommands);
+		_plume->setAccessibleName(u"Помощник Plume"_q);
+		_plume->setClickedCallback([=] {
+			TgLite::ShowAssistant(controller);
+		});
+		_plume->show();
+	}
 	const auto lockUnlock = _lockUnlock->entity();
 	lockUnlock->setAccessibleName(tr::lng_shortcuts_lock(tr::now));
 	lockUnlock->setClickedCallback([=] {
@@ -4553,9 +4566,11 @@ void Widget::updateControlsGeometry() {
 		+ st::dialogsFilterPadding.x();
 	const auto filterRight = st::dialogsFilterSkip
 		+ st::dialogsFilterPadding.x();
+	const auto plumeWidth = _plume ? _plume->width() : 0;
 	const auto filterWidth = std::max(ratiow, smallw)
 		- filterLeft
-		- filterRight;
+		- filterRight
+		- plumeWidth;
 	const auto filterAreaHeight = st::topBarHeight;
 	_searchControls->setGeometry(0, filterAreaTop, ratiow, filterAreaHeight);
 	if (_subsectionTopBar) {
@@ -4593,6 +4608,12 @@ void Widget::updateControlsGeometry() {
 		searchLeft,
 		st::dialogsFilterPadding.y());
 
+	if (_plume) {
+		_plume->moveToLeft(
+			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2,
+			st::dialogsFilterPadding.y());
+		_plume->setVisible(narrowRatio == 0.);
+	}
 	auto right = filterLeft + filterWidth;
 	_cancelSearch->moveToLeft(right - _cancelSearch->width(), _search->y());
 	right -= _jumpToDate->width();
