@@ -10,7 +10,7 @@ on:
 jobs:
   macos:
     runs-on: macos-15
-    timeout-minutes: 350
+    timeout-minutes: 358
     env:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
       XRAY_VERSION: "26.9.30"
@@ -72,6 +72,7 @@ jobs:
           ./configure.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
             -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -D CMAKE_OSX_ARCHITECTURES=arm64 \
             -D TDESKTOP_API_ID=$TG_API_ID \
             -D TDESKTOP_API_HASH=$TG_API_HASH \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
