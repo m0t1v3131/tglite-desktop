@@ -1,11 +1,26 @@
 # Plume (бывш. TG Lite) для Mac (Apple Silicon): Telegram Desktop + патч TG Lite (VPN через xray, своё обновление).
 # Готовый Plume-Mac.zip — артефакт сборки; на tg.amdiveev.ru его выкладывают с ПК (desktop-native в m0t1v3131/tg-lite).
+#
+# Бесплатный Mac на GitHub (3 ядра) не успевает собрать Telegram за 6 ч одного задания, поэтому сборка идёт заходами:
+# каждый заход компилирует до 5 ч, сохраняет папку сборки (out/) в кэш и, если программа не готова, сам запускает
+# следующий заход (workflow_dispatch, attempt+1) — тот продолжает с того же места. Библиотеки — в отдельном кэше.
 name: Plume Mac
 
 on:
   push:
     branches: [tglite]
   workflow_dispatch:
+    inputs:
+      attempt:
+        description: 'Номер захода (1 — с начала)'
+        default: '1'
+      build:
+        description: 'Номер сборки (ггммддчч), общий для всех заходов'
+        default: ''
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   macos:
@@ -14,10 +29,17 @@ jobs:
     env:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
       XRAY_VERSION: "26.9.30"
+      ATTEMPT: ${{ github.event.inputs.attempt || '1' }}
+      MAX_ATTEMPTS: 4
 
     steps:
       - name: Get repository name.
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+        run: |
+          echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+          BUILD="${{ github.event.inputs.build }}"
+          [ -n "$BUILD" ] || BUILD=$(date -u +%y%m%d%H)
+          echo "TGLITE_BUILD=$BUILD" >> $GITHUB_ENV
+          echo "Заход $ATTEMPT из $MAX_ATTEMPTS, сборка $BUILD"
 
       - name: Clone.
         uses: actions/checkout@v4
@@ -50,7 +72,7 @@ jobs:
       - name: Free up some disk space.
         run: find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/local/src/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
-      # Кэш сохраняем сразу — даже если сборка программы ниже упадёт, библиотеки (≈3 ч) не придётся собирать заново.
+      # Кэш библиотек сохраняем сразу — даже если сборка программы ниже не успеет, библиотеки (≈3 ч) не собирать заново.
       - name: Libraries cache (save).
         if: steps.libs-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -60,15 +82,25 @@ jobs:
             ThirdParty
           key: ${{ runner.OS }}-tglite-libs-full-${{ hashFiles(format('{0}/{1}', env.REPO_NAME, env.PREPARE_PATH)) }}
 
+      # Папка сборки прошлого захода (сохраняется ниже) — продолжаем с того же места.
+      - name: Build cache (restore).
+        if: env.ATTEMPT != '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REPO_NAME }}/out
+          key: ${{ runner.OS }}-plume-out-${{ env.TGLITE_BUILD }}-${{ env.ATTEMPT }}
+          restore-keys: ${{ runner.OS }}-plume-out-${{ env.TGLITE_BUILD }}-
+
       - name: Plume build.
+        id: build
+        timeout-minutes: 285
+        continue-on-error: true
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
           cd $REPO_NAME/Telegram
-          BUILD=$(date -u +%y%m%d%H)
-          echo "TGLITE_BUILD=$BUILD" >> $GITHUB_ENV
-          sed -i '' "s/inline constexpr auto kBuild = [0-9]*;/inline constexpr auto kBuild = $BUILD;/" SourceFiles/tglite/tglite.h
+          sed -i '' "s/inline constexpr auto kBuild = [0-9]*;/inline constexpr auto kBuild = $TGLITE_BUILD;/" SourceFiles/tglite/tglite.h
           ./configure.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
             -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
@@ -79,7 +111,28 @@ jobs:
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
           cmake --build ../out --config Release --parallel
 
+      - name: Build cache (save).
+        if: always() && steps.build.outcome != 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.REPO_NAME }}/out
+          key: ${{ runner.OS }}-plume-out-${{ env.TGLITE_BUILD }}-${{ env.ATTEMPT }}
+
+      - name: Next attempt.
+        if: always() && steps.build.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+            echo "Не собралось за $MAX_ATTEMPTS захода — смотреть журнал."
+            exit 1
+          fi
+          NEXT=$((ATTEMPT + 1))
+          gh workflow run tglite-mac.yml -R "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f attempt=$NEXT -f build=$TGLITE_BUILD
+          echo "Не успело за этот заход — запущен заход $NEXT, он продолжит с того же места."
+
       - name: Package.
+        if: steps.build.outcome == 'success'
         run: |
           cd $REPO_NAME/out/Release
           curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-macos-arm64-v8a.zip"
@@ -95,6 +148,7 @@ jobs:
           echo "$TGLITE_BUILD" > artifact/build.txt
 
       - uses: actions/upload-artifact@v4
+        if: steps.build.outcome == 'success'
         with:
           name: Plume-Mac
           path: ${{ env.REPO_NAME }}/out/Release/artifact/
