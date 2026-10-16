@@ -9,6 +9,7 @@ name: Plume Mac
 on:
   push:
     branches: [tglite]
+    paths-ignore: ['.github/**']  # правка сценариев не запускает пересборку (≈10 ч)
   workflow_dispatch:
     inputs:
       attempt:
@@ -140,6 +141,7 @@ jobs:
           mv Telegram.app Plume.app
           plutil -replace CFBundleName -string Plume Plume.app/Contents/Info.plist
           plutil -replace CFBundleDisplayName -string Plume Plume.app/Contents/Info.plist
+          plutil -replace CFBundleIdentifier -string ru.amdiveev.plume Plume.app/Contents/Info.plist  # не путать с официальным Telegram
           cp xray-dir/xray Plume.app/Contents/MacOS/xray
           chmod +x Plume.app/Contents/MacOS/xray
           codesign --force --deep -s - Plume.app

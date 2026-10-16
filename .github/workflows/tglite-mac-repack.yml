@@ -1,0 +1,45 @@
+# Переупаковка уже собранного Plume для Mac без пересборки (минуты вместо часов):
+# берёт артефакт Plume-Mac из запуска run_id, ставит свой идентификатор приложения и заново подписывает (ad-hoc).
+name: Plume Mac repack
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Запуск, где лежит артефакт Plume-Mac'
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  repack:
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Plume-Mac
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: in
+
+      - name: Repack.
+        run: |
+          mkdir work && cd work
+          ditto -x -k ../in/Plume-Mac.zip .
+          # свой идентификатор: иначе macOS путает Plume с официальным Telegram Desktop (иконка из кэша, общие настройки)
+          plutil -replace CFBundleIdentifier -string ru.amdiveev.plume Plume.app/Contents/Info.plist
+          plutil -replace CFBundleName -string Plume Plume.app/Contents/Info.plist
+          plutil -replace CFBundleDisplayName -string Plume Plume.app/Contents/Info.plist
+          codesign --force --deep -s - Plume.app
+          codesign --verify --deep Plume.app && echo "подпись в порядке"
+          mkdir ../out
+          ditto -c -k --sequesterRsrc --keepParent Plume.app ../out/Plume-Mac.zip
+          cp ../in/build.txt ../out/build.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Plume-Mac
+          path: out/
+          retention-days: 5
