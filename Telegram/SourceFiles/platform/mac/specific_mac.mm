@@ -247,14 +247,54 @@ void ShowTranslocationError() {
 
 	NSAlert *alert = [[NSAlert alloc] init];
 	alert.alertStyle = NSAlertStyleCritical;
-	alert.messageText = @"Telegram Desktop can't start from here";
-	alert.informativeText = @"macOS started this copy of Telegram Desktop "
-		@"from a read-only temporary location (App Translocation), so it "
-		@"can't use its own folder. Please reinstall the app and launch it "
-		@"again.";
-	[alert addButtonWithTitle:@"Quit"];
+	alert.messageText = @"Plume не может запуститься отсюда";
+	alert.informativeText = @"Перенесите Plume.app в папку «Программы» и откройте его оттуда. "
+		@"Если macOS не даёт открыть — в Терминале: xattr -cr /Applications/Plume.app";
+	[alert addButtonWithTitle:@"Выйти"];
 	[alert runModal];
 	[alert release];
+}
+
+// Plume: запущен из «Загрузок» / с образа диска — предлагаем перенести в «Программы» (как делают обычные Mac-программы).
+[[nodiscard]] bool AskMoveToApplications() {
+	NSApplication *app = [NSApplication sharedApplication];
+	[app setActivationPolicy:NSApplicationActivationPolicyRegular];
+	[app activateIgnoringOtherApps:YES];
+	NSAlert *alert = [[NSAlert alloc] init];
+	alert.messageText = @"Переместить Plume в «Программы»?";
+	alert.informativeText = @"Plume запущен из папки загрузок, отсюда он работать не может. "
+		@"Он перенесётся в «Программы» и сразу откроется.";
+	[alert addButtonWithTitle:@"Переместить"];
+	[alert addButtonWithTitle:@"Выйти"];
+	const auto result = [alert runModal];
+	[alert release];
+	return (result == NSAlertFirstButtonReturn);
+}
+
+// Переносит (с образа диска — копирует) бандл в /Applications, заменяя старую версию. Возвращает новый путь.
+[[nodiscard]] QString MoveToApplications(const QString &original) {
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSString *from = Platform::Q2NSString(original);
+	NSString *to = [@"/Applications" stringByAppendingPathComponent:[from lastPathComponent]];
+	if ([to isEqualToString:from]) {
+		return original;
+	}
+	NSError *error = nil;
+	if ([fm fileExistsAtPath:to]) {
+		[fm trashItemAtURL:[NSURL fileURLWithPath:to] resultingItemURL:nil error:nil];
+		[fm removeItemAtPath:to error:nil];
+	}
+	const auto fromImage = [from hasPrefix:@"/Volumes/"];
+	const auto ok = fromImage
+		? [fm copyItemAtPath:from toPath:to error:&error]
+		: ([fm moveItemAtPath:from toPath:to error:&error]
+			|| [fm copyItemAtPath:from toPath:to error:&error]);
+	if (!ok) {
+		LOG(("Translocation Error: move to Applications failed: %1"
+			).arg(Platform::NS2QString([error localizedDescription])));
+		return QString();
+	}
+	return Platform::NS2QString(to);
 }
 
 } // namespace
@@ -314,6 +354,20 @@ bool CheckAppTranslocation() {
 		LOG(("Translocation Info: relaunched from '%1'."
 			).arg(state.original));
 		return false;
+	}
+	if (!relaunched
+		&& !state.original.isEmpty()
+		&& QFileInfo(state.original + u"/Contents/Info.plist"_q).isFile()) {
+		if (!AskMoveToApplications()) {
+			return false;
+		}
+		const auto moved = MoveToApplications(state.original);
+		if (!moved.isEmpty()
+			&& RemoveQuarantineRecursively(moved)
+			&& RelaunchUntranslocated(moved)) {
+			LOG(("Translocation Info: moved to '%1' and relaunched.").arg(moved));
+			return false;
+		}
 	}
 	ShowTranslocationError();
 	return false;

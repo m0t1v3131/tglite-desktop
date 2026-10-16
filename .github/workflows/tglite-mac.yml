@@ -83,14 +83,15 @@ jobs:
             ThirdParty
           key: ${{ runner.OS }}-tglite-libs-full-${{ hashFiles(format('{0}/{1}', env.REPO_NAME, env.PREPARE_PATH)) }}
 
-      # Папка сборки прошлого захода (сохраняется ниже) — продолжаем с того же места.
+      # Папка сборки прошлого захода или прошлой сборки — Xcode перекомпилирует только изменённое.
       - name: Build cache (restore).
-        if: env.ATTEMPT != '1'
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.REPO_NAME }}/out
           key: ${{ runner.OS }}-plume-out-${{ env.TGLITE_BUILD }}-${{ env.ATTEMPT }}
-          restore-keys: ${{ runner.OS }}-plume-out-${{ env.TGLITE_BUILD }}-
+          restore-keys: |
+            ${{ runner.OS }}-plume-out-${{ env.TGLITE_BUILD }}-
+            ${{ runner.OS }}-plume-out-
 
       - name: Plume build.
         id: build
@@ -113,7 +114,7 @@ jobs:
           cmake --build ../out --config Release --parallel
 
       - name: Build cache (save).
-        if: always() && steps.build.outcome != 'success'
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: ${{ env.REPO_NAME }}/out
@@ -147,6 +148,9 @@ jobs:
           codesign --force --deep -s - Plume.app
           mkdir artifact
           ditto -c -k --sequesterRsrc --keepParent Plume.app artifact/Plume-Mac.zip
+          # Установщик для людей: окно с Plume и папкой «Программы» — перетащить и готово (zip — для автообновления).
+          mkdir dmg && cp -R Plume.app dmg/ && ln -s /Applications "dmg/Программы"
+          hdiutil create -volname Plume -srcfolder dmg -ov -format UDZO artifact/Plume-Mac.dmg
           echo "$TGLITE_BUILD" > artifact/build.txt
 
       - uses: actions/upload-artifact@v4
