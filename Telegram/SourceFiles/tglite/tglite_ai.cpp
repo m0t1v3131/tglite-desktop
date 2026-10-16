@@ -62,6 +62,18 @@ QJsonObject ReadState() {
 		: QJsonObject();
 }
 
+// Ключ ИИ-помощника встроен при сборке (-D TGLITE_AI_KEY); свой, введённый вручную, — главнее.
+#ifdef TGLITE_AI_KEY
+constexpr auto kEmbeddedAiKey = TGLITE_AI_KEY;
+#else // TGLITE_AI_KEY
+constexpr auto kEmbeddedAiKey = "";
+#endif // TGLITE_AI_KEY
+
+QString AiKey() {
+	const auto own = ReadState().value(u"aiKey"_q).toString();
+	return own.isEmpty() ? QString::fromLatin1(kEmbeddedAiKey) : own;
+}
+
 void SetState(const QString &key, const QJsonValue &value) {
 	auto state = ReadState();
 	state.insert(key, value);
@@ -254,7 +266,7 @@ private:
 			return;
 		}
 		_busy = true;
-		const auto key = ReadState().value(u"aiKey"_q).toString();
+		const auto key = AiKey();
 		auto request = QNetworkRequest(QUrl(QString(kEndpoint)));
 		request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
 		request.setRawHeader("X-Lite-Key", key.toUtf8());
@@ -673,7 +685,7 @@ void PollCommands();
 void FinishCommand(const QString &id, const QString &result, bool ok) {
 	auto request = QNetworkRequest(QUrl(u"https://tg.amdiveev.ru/api/cmd/"_q + id + u"/done"_q));
 	request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
-	request.setRawHeader("X-Lite-Key", ReadState().value(u"aiKey"_q).toString().toUtf8());
+	request.setRawHeader("X-Lite-Key", AiKey().toUtf8());
 	const auto reply = Net()->post(request, QJsonDocument(QJsonObject{
 		{ u"result"_q, result },
 		{ u"ok"_q, ok },
@@ -707,7 +719,7 @@ void RunCommands(std::vector<QJsonObject> list, int index) {
 }
 
 void PollCommands() {
-	const auto key = ReadState().value(u"aiKey"_q).toString();
+	const auto key = AiKey();
 	if (key.isEmpty() || CommandRunning) {
 		return;
 	}
@@ -749,7 +761,7 @@ void StartCommandPolling() {
 }
 
 void ShowAssistant(not_null<Window::SessionController*> controller) {
-	if (ReadState().value(u"aiKey"_q).toString().isEmpty()) {
+	if (AiKey().isEmpty()) {
 		ShowKeyBox(controller);
 		return;
 	}

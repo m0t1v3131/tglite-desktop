@@ -100,6 +100,7 @@ jobs:
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_AI_KEY: ${{ secrets.TG_AI_KEY }}
         run: |
           cd $REPO_NAME/Telegram
           sed -i '' "s/inline constexpr auto kBuild = [0-9]*;/inline constexpr auto kBuild = $TGLITE_BUILD;/" SourceFiles/tglite/tglite.h
@@ -110,7 +111,8 @@ jobs:
             -D TDESKTOP_API_ID=$TG_API_ID \
             -D TDESKTOP_API_HASH=$TG_API_HASH \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
+            -D TGLITE_AI_KEY=$TG_AI_KEY
           cmake --build ../out --config Release --parallel
 
       - name: Build cache (save).

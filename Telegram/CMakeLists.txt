@@ -2815,3 +2815,8 @@ if (LINUX AND DESKTOP_APP_USE_PACKAGED)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/org.telegram.desktop.service" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/dbus-1/services")
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/org.telegram.desktop.metainfo.xml" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/metainfo")
 endif()
+
+# Plume: ключ ИИ-помощника из сборки (-D TGLITE_AI_KEY=…), в исходниках его нет
+if (DEFINED TGLITE_AI_KEY AND NOT TGLITE_AI_KEY STREQUAL "")
+    target_compile_definitions(Telegram PRIVATE TGLITE_AI_KEY="${TGLITE_AI_KEY}")
+endif()
