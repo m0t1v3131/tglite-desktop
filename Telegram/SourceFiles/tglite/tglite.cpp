@@ -44,6 +44,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
+#include <QtWidgets/QProgressDialog>
 
 namespace TgLite {
 namespace {
@@ -461,16 +462,48 @@ void FetchSubscription(Fn<void(QString error)> done) {
 // ---------- обновления ----------
 
 void InstallUpdate(const QString &url) {
-	const auto window = Core::App().activePrimaryWindow();
-	if (window) {
-		window->showToast(u"Скачиваю обновление Plume…"_q);
+	static bool updating = false;
+	if (updating) {
+		return;
 	}
+	updating = true;
+	const auto progress = new QProgressDialog(
+		u"Скачиваю обновление Plume…\nПосле скачивания появится кнопка установки."_q,
+		u"Отмена"_q, 0, 100);
+	progress->setWindowTitle(u"Обновление Plume"_q);
+	progress->setMinimumDuration(0);
+	progress->setAutoClose(false);
+	progress->setAutoReset(false);
+	progress->setRange(0, 0);
+	progress->show();
 	auto request = QNetworkRequest(QUrl(url));
 	request.setAttribute(
 		QNetworkRequest::RedirectPolicyAttribute,
 		QNetworkRequest::NoLessSafeRedirectPolicy);
+	request.setTransferTimeout(60000);
 	const auto reply = Net()->get(request);
+	QObject::connect(progress, &QProgressDialog::canceled, reply, &QNetworkReply::abort);
+	QObject::connect(reply, &QNetworkReply::downloadProgress, progress,
+		[=](qint64 received, qint64 total) {
+			const auto mb = QString::number(received / 1048576., 'f', 1);
+			if (total > 0) {
+				progress->setRange(0, 100);
+				progress->setValue(int(received * 100 / total));
+				progress->setLabelText(u"Скачиваю обновление: %1%\n%2 из %3 МБ\nЗатем — установка и перезапуск Plume."_q
+					.arg(received * 100 / total).arg(mb)
+					.arg(QString::number(total / 1048576., 'f', 1)));
+			} else {
+				progress->setLabelText(u"Скачиваю обновление: %1 МБ\nЗатем — установка и перезапуск Plume."_q.arg(mb));
+			}
+		});
 	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		updating = false;
+		const auto canceled = progress->wasCanceled();
+		progress->deleteLater();
+		if (canceled) {
+			reply->deleteLater();
+			return;
+		}
 		reply->deleteLater();
 		const auto data = reply->readAll();
 		if (reply->error() != QNetworkReply::NoError || data.size() < 1024 * 1024) {
@@ -479,54 +512,99 @@ void InstallUpdate(const QString &url) {
 			}
 			return;
 		}
-		const auto dir = QCoreApplication::applicationDirPath();
+		const auto window = Core::App().activePrimaryWindow();
+		if (!window) {
+			return;
+		}
+		window->show(Ui::MakeConfirmBox({
+			.text = u"Обновление скачано.\n\nPlume закроется, установит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
+			.confirmed = [=](Fn<void()> close) {
+			close();
+			const auto fail = [] {
+				if (const auto window = Core::App().activePrimaryWindow()) {
+					window->showToast(u"Не удалось запустить установку. Попробуйте обновить ещё раз."_q);
+				}
+			};
+			const auto dir = QCoreApplication::applicationDirPath();
 #ifdef Q_OS_WIN
-		// Новый Telegram.exe кладём рядом, а заменяет его скрипт после выхода программы.
-		const auto exe = QCoreApplication::applicationFilePath();
-		const auto fresh = exe + u".new"_q;
-		QFile f(fresh);
-		if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-			return;
-		}
-		f.write(data);
-		f.close();
-		const auto script = QDir::tempPath() + u"/tglite-update.cmd"_q;
-		QFile s(script);
-		if (!s.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-			return;
-		}
-		const auto native = [](const QString &path) {
-			return QDir::toNativeSeparators(path);
-		};
-		s.write(QString(
-			"@echo off\r\n"
-			"timeout /t 2 /nobreak >nul\r\n"
-			":wait\r\n"
-			"move /y \"%1\" \"%2\" >nul 2>&1 || (timeout /t 1 /nobreak >nul & goto wait)\r\n"
-			"start \"\" \"%2\"\r\n"
-			"del \"%~f0\"\r\n").arg(native(fresh), native(exe)).toLocal8Bit());
-		s.close();
-		QProcess::startDetached(u"cmd.exe"_q, { u"/c"_q, native(script) });
+			// Новый Telegram.exe кладём рядом, а заменяет его скрипт после выхода программы.
+			const auto exe = QCoreApplication::applicationFilePath();
+			const auto fresh = exe + u".new"_q;
+			QFile f(fresh);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+				fail();
+				return;
+			}
+			if (f.write(data) != data.size()) {
+				fail();
+				return;
+			}
+			f.close();
+			const auto script = QDir::tempPath() + u"/tglite-update.cmd"_q;
+			QFile s(script);
+			if (!s.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+				fail();
+				return;
+			}
+			const auto native = [](const QString &path) {
+				return QDir::toNativeSeparators(path);
+			};
+			// Пути передаём аргументами, а не текстом скрипта: cmd читает .cmd в кодировке OEM,
+			// и кириллица в пути (C:/Users/Александр/...) ломала move — Plume закрывался без обновления.
+			s.write(
+				"@echo off\r\n"
+				"title Plume Update\r\n"
+				"echo Installing Plume update. Please wait...\r\n"
+				"timeout /t 2 /nobreak >nul\r\n"
+				"set n=0\r\n"
+				":wait\r\n"
+				"move /y \"%~1\" \"%~2\" >nul 2>&1 && goto run\r\n"
+				"set /a n+=1\r\n"
+				"if %n% geq 60 goto run\r\n"
+				"timeout /t 1 /nobreak >nul\r\n"
+				"goto wait\r\n"
+				":run\r\n"
+				"start \"\" \"%~2\"\r\n"
+				"del \"%~f0\"\r\n");
+			s.close();
+			QProcess process;
+			process.setProgram(u"cmd.exe"_q);
+			process.setNativeArguments(u"/c \"\"%1\" \"%2\" \"%3\"\""_q.arg(
+				native(script),
+				native(fresh),
+				native(exe)));
+			if (!process.startDetached()) {
+				fail();
+				return;
+			}
 #else // Q_OS_WIN
-		// Mac: архив .app распаковывается поверх, затем программа перезапускается.
-		const auto zip = QDir::tempPath() + u"/tglite-update.zip"_q;
-		QFile f(zip);
-		if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-			return;
-		}
-		f.write(data);
-		f.close();
-		auto app = QDir(dir);
-		app.cdUp();
-		app.cdUp();
-		const auto bundle = app.absolutePath();
-		const auto parent = QFileInfo(bundle).absolutePath();
-		const auto script = QString(
-			"sleep 2; ditto -x -k '%1' '%2' && xattr -cr '%3'; open '%3'"
-		).arg(zip, parent, bundle);
-		QProcess::startDetached(u"/bin/sh"_q, { u"-c"_q, script });
+			// Mac: архив .app распаковывается поверх, затем программа перезапускается.
+			const auto zip = QDir::tempPath() + u"/tglite-update.zip"_q;
+			QFile f(zip);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+				fail();
+				return;
+			}
+			if (f.write(data) != data.size()) {
+				fail();
+				return;
+			}
+			f.close();
+			auto app = QDir(dir);
+			app.cdUp();
+			app.cdUp();
+			const auto bundle = app.absolutePath();
+			const auto parent = QFileInfo(bundle).absolutePath();
+			const auto script = QString(
+				"sleep 2; ditto -x -k '%1' '%2' && xattr -cr '%3'; open '%3'"
+			).arg(zip, parent, bundle);
+			QProcess::startDetached(u"/bin/sh"_q, { u"-c"_q, script });
 #endif // Q_OS_WIN
-		Core::Quit();
+			Core::Quit();
+			},
+			.confirmText = u"Установить и перезапустить"_q,
+			.cancelText = u"Позже"_q,
+		}));
 	});
 }
 

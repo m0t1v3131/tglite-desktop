@@ -12,7 +12,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26101612;
+inline constexpr auto kBuild = 26101812;
 
 void Start();
 void Stop();
