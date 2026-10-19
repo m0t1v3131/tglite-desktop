@@ -685,7 +685,7 @@ Widget::Widget(
 		_plume->setIconOverride(
 			&st::menuIconBotCommands,
 			&st::menuIconBotCommands);
-		_plume->setAccessibleName(u"Помощник Plume"_q);
+		_plume->setAccessibleName(u"Takt — помощник"_q);
 		_plume->setClickedCallback([=] {
 			TgLite::ShowAssistant(controller);
 		});

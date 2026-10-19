@@ -778,7 +778,7 @@ void MainMenu::setupMenu() {
 		controller->showSettings();
 	});
 	addAction(
-		rpl::single(u"Помощник Plume (ИИ)"_q),
+		rpl::single(u"Takt — помощник (ИИ)"_q),
 		{ &st::menuIconBotCommands }
 	)->setClickedCallback([=] {
 		TgLite::ShowAssistant(controller);
