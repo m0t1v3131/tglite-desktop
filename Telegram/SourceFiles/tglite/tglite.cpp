@@ -24,6 +24,8 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/buttons.h"
+#include "ui/painter.h"
+#include "ui/rp_widget.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
 #include "styles/style_layers.h"
@@ -44,7 +46,6 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
-#include <QtWidgets/QProgressDialog>
 
 namespace TgLite {
 namespace {
@@ -466,45 +467,83 @@ void InstallUpdate(const QString &url) {
 	if (updating) {
 		return;
 	}
+	const auto main = Core::App().activePrimaryWindow();
+	if (!main) {
+		return;
+	}
 	updating = true;
-	const auto progress = new QProgressDialog(
-		u"Скачиваю обновление Plume…\nПосле скачивания появится кнопка установки."_q,
-		u"Отмена"_q, 0, 100);
-	progress->setWindowTitle(u"Обновление Plume"_q);
-	progress->setMinimumDuration(0);
-	progress->setAutoClose(false);
-	progress->setAutoReset(false);
-	progress->setRange(0, 0);
-	progress->show();
 	auto request = QNetworkRequest(QUrl(url));
 	request.setAttribute(
 		QNetworkRequest::RedirectPolicyAttribute,
 		QNetworkRequest::NoLessSafeRedirectPolicy);
 	request.setTransferTimeout(60000);
 	const auto reply = Net()->get(request);
-	QObject::connect(progress, &QProgressDialog::canceled, reply, &QNetworkReply::abort);
-	QObject::connect(reply, &QNetworkReply::downloadProgress, progress,
-		[=](qint64 received, qint64 total) {
-			const auto mb = QString::number(received / 1048576., 'f', 1);
-			if (total > 0) {
-				progress->setRange(0, 100);
-				progress->setValue(int(received * 100 / total));
-				progress->setLabelText(u"Скачиваю обновление: %1%\n%2 из %3 МБ\nЗатем — установка и перезапуск Plume."_q
-					.arg(received * 100 / total).arg(mb)
-					.arg(QString::number(total / 1048576., 'f', 1)));
-			} else {
-				progress->setLabelText(u"Скачиваю обновление: %1 МБ\nЗатем — установка и перезапуск Plume."_q.arg(mb));
+	const auto canceled = std::make_shared<bool>(false);
+	// Окно скачивания — обычное окно Plume (раньше был серый системный QProgressDialog).
+	const auto progressBox = main->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Обновление Plume"_q));
+		box->setCloseByOutsideClick(false);
+		box->setCloseByEscape(false);
+		const auto label = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Скачиваю новую версию…"_q,
+			st::boxLabel));
+		const auto bar = box->addRow(object_ptr<Ui::RpWidget>(box));
+		bar->resize(bar->width(), style::ConvertScale(6));
+		const auto share = std::make_shared<float64>(0.);
+		bar->paintRequest() | rpl::on_next([=] {
+			auto p = QPainter(bar);
+			PainterHighQualityEnabler hq(p);
+			p.setPen(Qt::NoPen);
+			const auto radius = bar->height() / 2.;
+			p.setBrush(st::windowBgOver);
+			p.drawRoundedRect(QRectF(bar->rect()), radius, radius);
+			if (*share > 0.) {
+				const auto filled = std::max(
+					float64(bar->height()),
+					bar->width() * *share);
+				p.setBrush(st::activeButtonBg);
+				p.drawRoundedRect(
+					QRectF(0., 0., filled, bar->height()),
+					radius,
+					radius);
 			}
+		}, bar->lifetime());
+		box->addSkip(st::boxLittleSkip);
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Потом Plume закроется, поставит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
+			st::boxDividerLabel));
+		box->addButton(rpl::single(u"Отмена"_q), [=] {
+			*canceled = true;
+			reply->abort();
+			box->closeBox();
 		});
+		QObject::connect(reply, &QNetworkReply::downloadProgress, label,
+			[=](qint64 received, qint64 total) {
+				const auto mb = [](qint64 bytes) {
+					return QString::number(bytes / 1048576., 'f', 0);
+				};
+				if (total > 0) {
+					*share = std::clamp(float64(received) / total, 0., 1.);
+					label->setText(u"Скачано %1 из %2 МБ · %3%"_q
+						.arg(mb(received), mb(total))
+						.arg(int(*share * 100)));
+				} else {
+					label->setText(u"Скачано %1 МБ"_q.arg(mb(received)));
+				}
+				bar->update();
+			});
+	}), Ui::LayerOption::CloseOther);
 	QObject::connect(reply, &QNetworkReply::finished, [=] {
 		updating = false;
-		const auto canceled = progress->wasCanceled();
-		progress->deleteLater();
-		if (canceled) {
-			reply->deleteLater();
-			return;
+		if (const auto strong = progressBox.get()) {
+			strong->closeBox();
 		}
 		reply->deleteLater();
+		if (*canceled) {
+			return;
+		}
 		const auto data = reply->readAll();
 		if (reply->error() != QNetworkReply::NoError || data.size() < 1024 * 1024) {
 			if (const auto window = Core::App().activePrimaryWindow()) {
@@ -688,7 +727,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		box->setTitle(rpl::single(u"Plume"_q));
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
-			u"VPN StealthSurf: Telegram работает через вашу подписку, остальные программы не затрагиваются. "
+			u"VPN StealthSurf: Plume работает через вашу подписку, остальные программы не затрагиваются. "
 			u"Ссылка — в личном кабинете StealthSurf или в Happ."_q,
 			st::boxLabel));
 		const auto url = box->addRow(object_ptr<Ui::InputField>(
@@ -698,7 +737,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			VpnUrl()));
 		const auto enabled = box->addRow(object_ptr<Ui::Checkbox>(
 			box,
-			u"Telegram через VPN"_q,
+			u"Plume через VPN"_q,
 			VpnEnabled()));
 		const auto list = Parse(ReadSubscription());
 		const auto status = box->addRow(object_ptr<Ui::FlatLabel>(
