@@ -344,7 +344,7 @@ private:
 	object_ptr<Ui::FadeWrapScaled<Ui::IconButton>> _jumpToDate;
 	object_ptr<Ui::CrossButton> _cancelSearch;
 	object_ptr<Ui::FadeWrapScaled<Ui::IconButton>> _lockUnlock;
-	object_ptr<Ui::IconButton> _plume = { nullptr }; // Plume: кнопка чата с помощником
+	object_ptr<Ui::AbstractButton> _plume = { nullptr }; // Plume: кнопка «Takt»
 
 	std::unique_ptr<Ui::MoreChatsBar> _moreChatsBar;
 

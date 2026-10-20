@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_widget.h"
+#include "tglite/tglite.h"
 #include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
@@ -681,14 +682,8 @@ Widget::Widget(
 		updateLockUnlockVisibility();
 	}, lifetime());
 	if (_layout != Layout::Child) {
-		_plume.create(_searchControls, st::dialogsLock);
-		_plume->setIconOverride(
-			&st::menuIconBotCommands,
-			&st::menuIconBotCommands);
-		_plume->setAccessibleName(u"Takt — помощник"_q);
-		_plume->setClickedCallback([=] {
-			TgLite::ShowAssistant(controller);
-		});
+		_plume = object_ptr<Ui::AbstractButton>::fromRaw(
+			TgLite::CreateTaktButton(_searchControls, controller));
 		_plume->show();
 	}
 	const auto lockUnlock = _lockUnlock->entity();
@@ -2123,7 +2118,9 @@ bool Widget::searchActive() const {
 }
 
 void Widget::updateSuggestions(anim::type animated) {
+	// Plume: в поиске только результаты — без «Недавних» и частых собеседников.
 	const auto suggest = (searchActive() || _searchSuggestionsLocked)
+		&& !TgLite::HideRecentSearch()
 		&& !_searchState.inChat
 		&& (_inner->state() == WidgetState::Default);
 	if (anim::Disabled() || !session().data().chatsListLoaded()) {

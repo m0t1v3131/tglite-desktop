@@ -1,5 +1,5 @@
-# Plume (бывш. TG Lite) для Mac (Apple Silicon): Telegram Desktop + патч TG Lite (VPN через xray, своё обновление).
-# Готовый Plume-Mac.zip — артефакт сборки; на tg.amdiveev.ru его выкладывают с ПК (desktop-native в m0t1v3131/tg-lite).
+# Plume для Mac (Apple Silicon): Telegram Desktop + патч Plume (VPN через xray, своё обновление).
+# Готовый Plume-Mac.zip — артефакт сборки; на plume.amdiveev.ru его выкладывают с ПК (desktop-native в m0t1v3131/tg-lite).
 #
 # Бесплатный Mac на GitHub (3 ядра) не успевает собрать Telegram за 6 ч одного задания, поэтому сборка идёт заходами:
 # каждый заход компилирует до 5 ч, сохраняет папку сборки (out/) в кэш и, если программа не готова, сам запускает
@@ -142,8 +142,8 @@ jobs:
           curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-macos-arm64-v8a.zip"
           unzip -o -q xray.zip xray -d xray-dir
           mv Telegram.app Plume.app
-          plutil -replace CFBundleName -string Plume Plume.app/Contents/Info.plist
-          plutil -replace CFBundleDisplayName -string Plume Plume.app/Contents/Info.plist
+          plutil -replace CFBundleName -string Плюм Plume.app/Contents/Info.plist
+          plutil -replace CFBundleDisplayName -string Плюм Plume.app/Contents/Info.plist
           plutil -replace CFBundleIdentifier -string ru.amdiveev.plume Plume.app/Contents/Info.plist  # не путать с официальным Telegram
           cp xray-dir/xray Plume.app/Contents/MacOS/xray
           chmod +x Plume.app/Contents/MacOS/xray
@@ -152,7 +152,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent Plume.app artifact/Plume-Mac.zip
           # Установщик для людей: окно с Plume и папкой «Программы» — перетащить и готово (zip — для автообновления).
           mkdir dmg && cp -R Plume.app dmg/ && ln -s /Applications "dmg/Программы"
-          hdiutil create -volname Plume -srcfolder dmg -ov -format UDZO artifact/Plume-Mac.dmg
+          hdiutil create -volname Плюм -srcfolder dmg -ov -format UDZO artifact/Plume-Mac.dmg
           echo "$TGLITE_BUILD" > artifact/build.txt
 
       - uses: actions/upload-artifact@v4

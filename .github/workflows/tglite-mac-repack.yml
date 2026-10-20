@@ -30,8 +30,8 @@ jobs:
           ditto -x -k ../in/Plume-Mac.zip .
           # свой идентификатор: иначе macOS путает Plume с официальным Telegram Desktop (иконка из кэша, общие настройки)
           plutil -replace CFBundleIdentifier -string ru.amdiveev.plume Plume.app/Contents/Info.plist
-          plutil -replace CFBundleName -string Plume Plume.app/Contents/Info.plist
-          plutil -replace CFBundleDisplayName -string Plume Plume.app/Contents/Info.plist
+          plutil -replace CFBundleName -string Плюм Plume.app/Contents/Info.plist
+          plutil -replace CFBundleDisplayName -string Плюм Plume.app/Contents/Info.plist
           codesign --force --deep -s - Plume.app
           codesign --verify --deep Plume.app && echo "подпись в порядке"
           mkdir ../out

@@ -1264,7 +1264,7 @@ void BuildExportSection(SectionBuilder &builder) {
 
 	builder.addButton({
 		.id = u"advanced/tglite"_q,
-		.title = rpl::single(u"Plume: VPN и обновления"_q),
+		.title = rpl::single(u"Плюм: VPN и обновления"_q),
 		.icon = { &st::menuIconExperimental },
 		.onClick = [=] { TgLite::ShowSettingsBox(controller); },
 		.keywords = { u"vpn"_q, u"tglite"_q, u"update"_q, u"proxy"_q },

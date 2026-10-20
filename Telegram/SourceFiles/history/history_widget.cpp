@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_widget.h"
+#include "tglite/tglite_ai.h"
 
 #include "api/api_compose_with_ai.h"
 #include "api/api_editing.h"
@@ -496,6 +497,9 @@ HistoryWidget::HistoryWidget(
 	) | rpl::on_next([=] {
 		fieldChanged();
 	}, _field->lifetime());
+	TgLite::InstallReplySuggestions(_field, controller, [=]() -> History* {
+		return _editMsgId ? nullptr : _history;
+	});
 	Data::AmPremiumValue(&session()) | rpl::on_next([=] {
 		checkCharsLimitation();
 		updateAiButtonVisibility();

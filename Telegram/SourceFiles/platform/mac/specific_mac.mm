@@ -247,7 +247,7 @@ void ShowTranslocationError() {
 
 	NSAlert *alert = [[NSAlert alloc] init];
 	alert.alertStyle = NSAlertStyleCritical;
-	alert.messageText = @"Plume не может запуститься отсюда";
+	alert.messageText = @"Плюм не может запуститься отсюда";
 	alert.informativeText = @"Перенесите Plume.app в папку «Программы» и откройте его оттуда. "
 		@"Если macOS не даёт открыть — в Терминале: xattr -cr /Applications/Plume.app";
 	[alert addButtonWithTitle:@"Выйти"];
@@ -261,8 +261,8 @@ void ShowTranslocationError() {
 	[app setActivationPolicy:NSApplicationActivationPolicyRegular];
 	[app activateIgnoringOtherApps:YES];
 	NSAlert *alert = [[NSAlert alloc] init];
-	alert.messageText = @"Переместить Plume в «Программы»?";
-	alert.informativeText = @"Plume запущен из папки загрузок, отсюда он работать не может. "
+	alert.messageText = @"Переместить Плюм в «Программы»?";
+	alert.informativeText = @"Плюм запущен из папки загрузок, отсюда он работать не может. "
 		@"Он перенесётся в «Программы» и сразу откроется.";
 	[alert addButtonWithTitle:@"Переместить"];
 	[alert addButtonWithTitle:@"Выйти"];

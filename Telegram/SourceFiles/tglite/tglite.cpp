@@ -1,12 +1,12 @@
 /*
-TG Lite — свои функции поверх Telegram Desktop.
+Plume — свои функции поверх Telegram Desktop.
 Licensed under GNU GPL v. 3.
 
 VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-настройки xray) → xray(.exe) рядом с программой
 слушает SOCKS5 127.0.0.1:kPort → Telegram ходит через него как через обычный прокси.
 Разбор подписки — как Sub.kt «Тропы» (m0t1v3131/tropa) и LiteVpn.java Android-версии; менять вместе.
 
-Обновления: https://tg.amdiveev.ru/tglite-desktop.json {"win": {"build", "url"}, "mac": {...}, "notes"}.
+Обновления: https://plume.amdiveev.ru/tglite-desktop.json {"win": {"build", "url"}, "mac": {...}, "notes"}.
 */
 #include "tglite/tglite.h"
 #include "tglite/tglite_ai.h"
@@ -27,6 +27,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/painter.h"
 #include "ui/rp_widget.h"
 #include "window/window_controller.h"
+#include "mainwindow.h"
 #include "window/window_session_controller.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
@@ -41,6 +42,13 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include <QtCore/QJsonObject>
 #include <QtCore/QProcess>
 #include <QtCore/QUrlQuery>
+#include <QtCore/QTimer>
+#include <QtCore/QPointer>
+#include <QtWidgets/QFrame>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QVBoxLayout>
 #include <QtGui/QClipboard>
 #include <QtGui/QGuiApplication>
 #include <QtNetwork/QNetworkAccessManager>
@@ -51,7 +59,7 @@ namespace TgLite {
 namespace {
 
 constexpr auto kPort = 10879;
-constexpr auto kUpdateUrl = "https://tg.amdiveev.ru/tglite-desktop.json";
+constexpr auto kUpdateUrl = "https://plume.amdiveev.ru/tglite-desktop.json";
 constexpr auto kSubscriptionAgent = "Happ/3.0.0";
 
 struct Entry {
@@ -481,7 +489,7 @@ void InstallUpdate(const QString &url) {
 	const auto canceled = std::make_shared<bool>(false);
 	// Окно скачивания — обычное окно Plume (раньше был серый системный QProgressDialog).
 	const auto progressBox = main->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Обновление Plume"_q));
+		box->setTitle(rpl::single(u"Обновление Плюма"_q));
 		box->setCloseByOutsideClick(false);
 		box->setCloseByEscape(false);
 		const auto label = box->addRow(object_ptr<Ui::FlatLabel>(
@@ -512,7 +520,7 @@ void InstallUpdate(const QString &url) {
 		box->addSkip(st::boxLittleSkip);
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
-			u"Потом Plume закроется, поставит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
+			u"Потом Плюм закроется, поставит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
 			st::boxDividerLabel));
 		box->addButton(rpl::single(u"Отмена"_q), [=] {
 			*canceled = true;
@@ -556,7 +564,7 @@ void InstallUpdate(const QString &url) {
 			return;
 		}
 		window->show(Ui::MakeConfirmBox({
-			.text = u"Обновление скачано.\n\nPlume закроется, установит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
+			.text = u"Обновление скачано.\n\nПлюм закроется, установит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
 			.confirmed = [=](Fn<void()> close) {
 			close();
 			const auto fail = [] {
@@ -647,18 +655,66 @@ void InstallUpdate(const QString &url) {
 	});
 }
 
+// Шторка остаётся поверх чата, пока владелец не выберет действие.
+class UpdateCurtain final : public QFrame {
+public:
+	UpdateCurtain(QWidget *parent, const QString &url, const QString &notes)
+	: QFrame(parent) {
+		setObjectName("plumeUpdateCurtain");
+		setStyleSheet(u"QFrame#plumeUpdateCurtain { background: #27406b; border-radius: 12px; } QLabel { color: white; } QPushButton { background: white; color: #27406b; border: none; border-radius: 6px; padding: 8px 14px; }"_q);
+		auto layout = new QVBoxLayout(this);
+		layout->setContentsMargins(18, 14, 18, 14);
+		auto title = new QLabel(u"Доступно обновление Плюма"_q, this);
+		layout->addWidget(title);
+		auto details = new QLabel(notes.isEmpty()
+			? u"Новая версия готова к установке. Чаты и настройки сохранятся."_q
+			: notes.left(600), this);
+		details->setWordWrap(true);
+		layout->addWidget(details);
+		auto buttons = new QHBoxLayout();
+		auto install = new QPushButton(u"Скачать и установить"_q, this);
+		auto later = new QPushButton(u"Позже"_q, this);
+		buttons->addWidget(install);
+		buttons->addWidget(later);
+		buttons->addStretch();
+		layout->addLayout(buttons);
+		QObject::connect(install, &QPushButton::clicked, this, [=] {
+			deleteLater();
+			InstallUpdate(url);
+		});
+		QObject::connect(later, &QPushButton::clicked, this, [=] {
+			deleteLater();
+		});
+		parent->installEventFilter(this);
+		place();
+		show();
+		raise();
+	}
+protected:
+	bool eventFilter(QObject *watched, QEvent *event) override {
+		if (watched == parentWidget() && event->type() == QEvent::Resize) {
+			place();
+		}
+		return QFrame::eventFilter(watched, event);
+	}
+private:
+	void place() {
+		const auto available = parentWidget()->width();
+		setFixedWidth(std::max(1, std::min(560, available - 24)));
+		adjustSize();
+		move((available - width()) / 2, 12);
+	}
+};
+
 void OfferUpdate(const QString &url, const QString &notes) {
 	const auto window = Core::App().activePrimaryWindow();
-	if (!window) {
+	if (!window || QUrl(url).scheme() != u"https"_q) return;
+	static auto curtain = QPointer<UpdateCurtain>();
+	if (curtain) {
+		curtain->raise();
 		return;
 	}
-	window->show(Ui::MakeConfirmBox({
-		.text = u"Доступна новая версия Plume."_q
-			+ (notes.isEmpty() ? QString() : (u"\n\n"_q + notes)),
-		.confirmed = [=](Fn<void()> close) { close(); InstallUpdate(url); },
-		.confirmText = u"Обновить"_q,
-		.cancelText = u"Позже"_q,
-	}));
+	curtain = new UpdateCurtain(window->widget()->bodyWidget(), url, notes);
 }
 
 } // namespace
@@ -669,12 +725,22 @@ bool HideStories() {
 		|| state.value(u"hideStories"_q).toBool();
 }
 
+bool HideRecentSearch() {
+	const auto state = ReadState();
+	return !state.contains(u"hideRecentSearch"_q)
+		|| state.value(u"hideRecentSearch"_q).toBool();
+}
+
 void CheckUpdates(bool manual) {
+	static auto checking = false;
+	if (checking) return;
+	checking = true;
 	auto request = QNetworkRequest(QUrl(QString(kUpdateUrl)));
 	request.setTransferTimeout(15000);
 	const auto reply = Net()->get(request);
 	QObject::connect(reply, &QNetworkReply::finished, [=] {
 		reply->deleteLater();
+		checking = false;
 		const auto info = QJsonDocument::fromJson(reply->readAll()).object();
 #ifdef Q_OS_WIN
 		const auto platform = info.value(u"win"_q).toObject();
@@ -692,7 +758,7 @@ void CheckUpdates(bool manual) {
 				platform.value(u"url"_q).toString(),
 				info.value(u"notes"_q).toString());
 		} else if (manual && window) {
-			window->showToast(u"У вас последняя версия Plume"_q);
+			window->showToast(u"У вас последняя версия Плюма"_q);
 		}
 	});
 }
@@ -713,6 +779,11 @@ void Start() {
 		}
 	}
 	StartCommandPolling();
+	static auto timer = new QTimer(QCoreApplication::instance());
+	if (!timer->isActive()) {
+		QObject::connect(timer, &QTimer::timeout, [] { CheckUpdates(false); });
+		timer->start(3 * 60 * 60 * 1000);
+	}
 	base::call_delayed(10000, QCoreApplication::instance(), [] {
 		CheckUpdates(false);
 	});
@@ -724,10 +795,10 @@ void Stop() {
 
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Plume"_q));
+		box->setTitle(rpl::single(u"Плюм"_q));
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
-			u"VPN StealthSurf: Plume работает через вашу подписку, остальные программы не затрагиваются. "
+			u"VPN StealthSurf: Плюм работает через вашу подписку, остальные программы не затрагиваются. "
 			u"Ссылка — в личном кабинете StealthSurf или в Happ."_q,
 			st::boxLabel));
 		const auto url = box->addRow(object_ptr<Ui::InputField>(
@@ -737,7 +808,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			VpnUrl()));
 		const auto enabled = box->addRow(object_ptr<Ui::Checkbox>(
 			box,
-			u"Plume через VPN"_q,
+			u"Плюм через VPN"_q,
 			VpnEnabled()));
 		const auto list = Parse(ReadSubscription());
 		const auto status = box->addRow(object_ptr<Ui::FlatLabel>(
@@ -778,9 +849,16 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		stories->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"hideStories"_q, checked);
 		}, stories->lifetime());
+		const auto recent = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Скрыть недавние в поиске"_q,
+			HideRecentSearch()));
+		recent->checkedChanges() | rpl::on_next([](bool checked) {
+			SetState(u"hideRecentSearch"_q, checked);
+		}, recent->lifetime());
 		box->addRow(object_ptr<Ui::LinkButton>(
 			box,
-			u"Проверить обновления"_q))->setClickedCallback([] {
+			u"Обновление · версия "_q + QString::number(kBuild) + u" · Проверить"_q))->setClickedCallback([] {
 			CheckUpdates(true);
 		});
 		box->addButton(rpl::single(u"Сохранить"_q), [=] {

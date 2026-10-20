@@ -390,8 +390,8 @@ MainMenu::MainMenu(
 	parentResized();
 
 	_telegram->setMarkedText(tr::link(
-		u"Plume"_q,
-		u"https://tg.amdiveev.ru"_q));
+		u"Плюм"_q,
+		u"https://plume.amdiveev.ru"_q));
 	_telegram->setLinksTrusted();
 	// The canary version is too long for the "Version {version}" form.
 	_version->setMarkedText(
@@ -402,7 +402,7 @@ MainMenu::MainMenu(
 					tr::now,
 					lt_version,
 					currentVersionShortText()
-						+ u" · Plume "_q
+						+ u" · Плюм "_q
 						+ QString::number(TgLite::kBuild)),
 			1) // Link 1.
 		.append(QChar(' '))
@@ -778,13 +778,13 @@ void MainMenu::setupMenu() {
 		controller->showSettings();
 	});
 	addAction(
-		rpl::single(u"Takt — помощник (ИИ)"_q),
+		rpl::single(u"Takt — помощник (Ctrl+T)"_q),
 		{ &st::menuIconBotCommands }
 	)->setClickedCallback([=] {
 		TgLite::ShowAssistant(controller);
 	});
 	addAction(
-		rpl::single(u"Plume: VPN и обновления"_q),
+		rpl::single(u"Плюм: VPN и обновления"_q),
 		{ &st::menuIconExperimental }
 	)->setClickedCallback([=] {
 		TgLite::ShowSettingsBox(controller);
