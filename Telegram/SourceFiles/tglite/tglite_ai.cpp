@@ -59,6 +59,7 @@ Licensed under GNU GPL v. 3.
 #include <QtNetwork/QNetworkRequest>
 #include <QtCore/QRegularExpression>
 #include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
@@ -2163,6 +2164,8 @@ Ui::AbstractButton *CreateTaktButton(
 namespace {
 
 // Панель принадлежит полю: закрытие чата уничтожает обработчики и таймеры.
+// Рисуется цветами темы Telegram: пустое поле — маленькая «пилюля» справа,
+// варианты — карточка над полем, как всплывающие подсказки Telegram.
 class ReplySuggestions final : public QWidget {
 public:
 	ReplySuggestions(
@@ -2173,43 +2176,7 @@ public:
 	, _field(field)
 	, _controller(controller)
 	, _currentHistory(std::move(currentHistory)) {
-		setObjectName(u"taktReplies"_q);
-		setStyleSheet(u"#taktReplies { background: palette(window); border: 1px solid palette(mid); border-radius: 8px; } QPushButton { text-align: left; padding: 6px; }"_q);
-		const auto layout = new QVBoxLayout(this);
-		layout->setContentsMargins(8, 6, 8, 6);
-		layout->setSpacing(3);
-		const auto header = new QHBoxLayout();
-		_status = new QPushButton(u"Такт · Предложить ответ"_q, this);
-		header->addWidget(_status, 1);
-		const auto pause = new QPushButton(u"×"_q, this);
-		pause->setToolTip(u"Скрыть подсказки до следующего чата"_q);
-		header->addWidget(pause);
-		layout->addLayout(header);
-		QObject::connect(pause, &QPushButton::clicked, this, [=] {
-			_pausedHistory = _currentHistory();
-			++_generation;
-			_debounce.stop();
-			hide();
-		});
-		QObject::connect(_status, &QPushButton::clicked, this, [=] { request(); });
-		for (auto i = 0; i != 3; ++i) {
-			const auto button = new QPushButton(this);
-			button->hide();
-			_buttons.push_back(button);
-			layout->addWidget(button);
-			QObject::connect(button, &QPushButton::clicked, this, [=] {
-				if (!isCurrent(_generation) || i >= _answers.size()) return;
-				const auto answer = _answers[i];
-				++_generation;
-				_applying = true;
-				_field->setTextWithTags({ answer, TextWithTags::Tags() });
-				_field->setFocusFast();
-				_applying = false;
-				_text = answer;
-				_debounce.stop();
-				hide();
-			});
-		}
+		setMouseTracking(true);
 		_debounce.setSingleShot(true);
 		QObject::connect(&_debounce, &QTimer::timeout, this, [=] { request(); });
 		// Проверяем смену чата и расположение поля, не загружая историю и сеть.
@@ -2224,7 +2191,165 @@ public:
 		hide();
 	}
 
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		const auto r = rect().marginsRemoved({ 1, 1, 1, 2 });
+		const auto radius = _answers.isEmpty() ? r.height() / 2. : style::ConvertScale(12) * 1.;
+		// Мягкая тень и сама подложка.
+		p.setPen(Qt::NoPen);
+		p.setBrush(st::shadowFg);
+		p.drawRoundedRect(r.translated(0, 1), radius, radius);
+		p.setBrush(st::windowBg);
+		p.drawRoundedRect(r, radius, radius);
+
+		const auto pad = style::ConvertScale(12);
+		if (_answers.isEmpty()) {
+			auto left = pad;
+			const auto label = u"Takt"_q;
+			p.setFont(st::semiboldFont);
+			p.setPen(st::windowActiveTextFg);
+			p.drawText(QRect(left, r.y(), st::semiboldFont->width(label), r.height()), Qt::AlignVCenter, label);
+			left += st::semiboldFont->width(label) + style::ConvertScale(6);
+			p.setFont(st::normalFont);
+			p.setPen(_over == kRequest && !_loading ? st::windowFg : st::windowSubTextFg);
+			p.drawText(QRect(left, r.y(), width() - left, r.height()), Qt::AlignVCenter, pillText());
+			paintClose(p, closeRect());
+			return;
+		}
+
+		// Заголовок: «Takt предлагает» · «Ещё» · ×.
+		const auto header = headerRect();
+		p.setFont(st::semiboldFont);
+		p.setPen(st::windowActiveTextFg);
+		p.drawText(header.adjusted(pad, 0, 0, 0), Qt::AlignVCenter, u"Takt"_q);
+		const auto tw = st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(6);
+		p.setFont(st::normalFont);
+		p.setPen(st::windowSubTextFg);
+		p.drawText(header.adjusted(pad + tw, 0, 0, 0), Qt::AlignVCenter, u"предлагает"_q);
+		const auto more = moreRect();
+		p.setPen(_over == kRequest ? st::windowFg : st::windowActiveTextFg);
+		p.drawText(more, Qt::AlignCenter, u"Ещё"_q);
+		paintClose(p, closeRect());
+
+		for (auto i = 0; i < _answers.size(); ++i) {
+			const auto chip = answerRect(i);
+			p.setPen(Qt::NoPen);
+			p.setBrush(_over == i ? st::lightButtonBgOver : st::lightButtonBg);
+			const auto cr = style::ConvertScale(10) * 1.;
+			p.drawRoundedRect(chip, cr, cr);
+			p.setFont(st::normalFont);
+			p.setPen(st::windowFg);
+			const auto inner = chip.marginsRemoved({ style::ConvertScale(12), 0, style::ConvertScale(12), 0 });
+			p.drawText(inner, Qt::AlignVCenter | Qt::AlignLeft,
+				st::normalFont->elided(_answers[i].simplified(), inner.width()));
+		}
+	}
+
+	void mouseMoveEvent(QMouseEvent *e) override {
+		const auto over = hit(e->pos());
+		if (over == _over) return;
+		_over = over;
+		setCursor((over == kNone || (over == kRequest && _loading)) ? style::cur_default : style::cur_pointer);
+		setToolTip(over >= 0 && over < _answers.size()
+			? _answers[over]
+			: over == kClose ? u"Скрыть до следующего чата"_q
+			: _error);
+		update();
+	}
+
+	void leaveEvent(QEvent *e) override {
+		_over = kNone;
+		update();
+	}
+
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		const auto action = hit(e->pos());
+		if (action == kClose) {
+			_pausedHistory = _currentHistory();
+			++_generation;
+			_debounce.stop();
+			hide();
+		} else if (action == kRequest) {
+			if (!_loading) request();
+		} else if (action >= 0) {
+			apply(action);
+		}
+	}
+
 private:
+	static constexpr auto kNone = -1;
+	static constexpr auto kRequest = 10;
+	static constexpr auto kClose = 11;
+
+	QString pillText() const {
+		return _loading
+			? u"подбирает ответы…"_q
+			: !_error.isEmpty()
+			? u"не получилось · повторить"_q
+			: _text.trimmed().isEmpty()
+			? u"подсказать ответ"_q
+			: u"варианты ответа"_q;
+	}
+
+	int headerHeight() const { return style::ConvertScale(32); }
+	int rowHeight() const { return style::ConvertScale(34); }
+	int gap() const { return style::ConvertScale(4); }
+
+	QRect headerRect() const {
+		return QRect(0, 0, width(), headerHeight());
+	}
+	QRect closeRect() const {
+		const auto size = style::ConvertScale(28);
+		const auto h = _answers.isEmpty() ? height() : headerHeight();
+		return QRect(width() - size - style::ConvertScale(4), (h - size) / 2, size, size);
+	}
+	QRect moreRect() const {
+		const auto w = st::normalFont->width(u"Ещё"_q) + style::ConvertScale(16);
+		return QRect(closeRect().x() - w, 0, w, headerHeight());
+	}
+	QRect answerRect(int i) const {
+		const auto pad = style::ConvertScale(8);
+		return QRect(pad, headerHeight() + i * (rowHeight() + gap()), width() - 2 * pad, rowHeight());
+	}
+
+	int hit(QPoint point) const {
+		if (closeRect().contains(point)) return kClose;
+		if (_answers.isEmpty()) return rect().contains(point) ? kRequest : kNone;
+		if (moreRect().contains(point)) return kRequest;
+		for (auto i = 0; i < _answers.size(); ++i) {
+			if (answerRect(i).contains(point)) return i;
+		}
+		return kNone;
+	}
+
+	void paintClose(QPainter &p, QRect area) {
+		const auto c = QRectF(area).center();
+		const auto d = style::ConvertScale(4) * 1.;
+		auto pen = QPen(_over == kClose ? st::windowFg->c : st::windowSubTextFg->c);
+		pen.setWidthF(style::ConvertScale(15) / 10.);
+		pen.setCapStyle(Qt::RoundCap);
+		p.setPen(pen);
+		p.drawLine(c + QPointF(-d, -d), c + QPointF(d, d));
+		p.drawLine(c + QPointF(-d, d), c + QPointF(d, -d));
+	}
+
+	void apply(int i) {
+		if (!isCurrent(_generation) || i >= _answers.size()) return;
+		const auto answer = _answers[i];
+		++_generation;
+		_applying = true;
+		_field->setTextWithTags({ answer, TextWithTags::Tags() });
+		_field->setFocusFast();
+		_applying = false;
+		_text = answer;
+		_answers.clear();
+		_debounce.stop();
+		hide();
+	}
+
 	bool canSuggest() const {
 		const auto history = _currentHistory();
 		return history && history->peer->isUser()
@@ -2246,11 +2371,11 @@ private:
 		_debounce.stop();
 		hide();
 		_answers.clear();
-		for (const auto button : _buttons) button->hide();
+		_error = QString();
+		_loading = false;
+		_over = kNone;
 		_history = _currentHistory();
 		_text = _field->getTextWithTags().text;
-		_status->setText(u"Такт · Предложить ответ"_q);
-		_status->setEnabled(true);
 	}
 
 	void updateContext() {
@@ -2263,15 +2388,25 @@ private:
 			return;
 		}
 		if (!isVisible() && _text.trimmed().isEmpty()) show();
-		if (isVisible()) {
-			setFixedWidth(std::max(1, _field->width()));
-			for (auto i = 0; i < _answers.size(); ++i) {
-				_buttons[i]->setText(_buttons[i]->fontMetrics().elidedText(_answers[i].simplified(), Qt::ElideRight, std::max(1, width() - 40)));
-			}
-			adjustSize();
-			move(_field->mapTo(parentWidget(), QPoint(0, 0)) - QPoint(0, height() + 4));
-			raise();
+		if (!isVisible()) return;
+		const auto origin = _field->mapTo(parentWidget(), QPoint(0, 0));
+		const auto space = style::ConvertScale(6);
+		auto size = QSize();
+		if (_answers.isEmpty()) {
+			const auto label = st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(6)
+				+ st::normalFont->width(pillText());
+			size = QSize(style::ConvertScale(12) + label + style::ConvertScale(36), style::ConvertScale(32));
+			size.setWidth(std::min(size.width(), std::max(1, _field->width())));
+			move(origin.x() + _field->width() - size.width(), origin.y() - size.height() - space);
+		} else {
+			size = QSize(
+				std::max(1, _field->width()),
+				headerHeight() + _answers.size() * (rowHeight() + gap()) + style::ConvertScale(6));
+			move(origin.x(), origin.y() - size.height() - space);
 		}
+		if (this->size() != size) resize(size);
+		raise();
+		update();
 	}
 
 	void request() {
@@ -2279,22 +2414,19 @@ private:
 		invalidate();
 		const auto generation = _generation;
 		const auto guard = QPointer<ReplySuggestions>(this);
-		_status->setText(u"Такт подбирает ответы…"_q);
-		_status->setEnabled(false);
+		_loading = true;
 		show();
 		updateContext();
 		AssistantFor(_controller)->suggestReply(_history, _text,
 			[=] { return guard && guard->isCurrent(generation); },
 			[=](QStringList answers, QString error) {
 				if (!guard || !guard->isCurrent(generation)) return;
+				_loading = false;
 				_answers = answers;
-				_status->setEnabled(true);
-				_status->setToolTip(error);
-				_status->setText(error.isEmpty() ? u"Такт · Ещё варианты"_q : error);
-				for (auto i = 0; i < _answers.size(); ++i) {
-					_buttons[i]->setToolTip(_answers[i]);
-					_buttons[i]->show();
-				}
+				_error = answers.isEmpty()
+					? (error.isEmpty() ? u"Не получилось подобрать ответ"_q : error)
+					: QString();
+				_over = kNone;
 				show();
 				updateContext();
 			});
@@ -2305,13 +2437,14 @@ private:
 	Fn<History*()> _currentHistory;
 	History *_history = nullptr;
 	History *_pausedHistory = nullptr;
-	QPushButton *_status = nullptr;
-	std::vector<QPushButton*> _buttons;
 	QStringList _answers;
 	QString _text;
+	QString _error;
 	QTimer _debounce;
 	QTimer _watch;
 	int _generation = 0;
+	int _over = kNone;
+	bool _loading = false;
 	bool _applying = false;
 };
 
