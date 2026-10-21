@@ -317,6 +317,7 @@ System::SkipState System::skipNotification(
 	const auto messageType = (type == Data::ItemNotificationType::Message);
 	const auto thread = item->maybeNotificationThread();
 	if (!thread
+		|| TgLite::MuteAll() // Плюм: все уведомления выключены
 		|| TgLite::FocusHidden(item->history()) // Плюм: фокус-режим
 		|| !thread->currentNotification()
 		|| (messageType && item->skipNotification())

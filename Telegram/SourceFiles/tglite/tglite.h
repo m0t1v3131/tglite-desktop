@@ -14,7 +14,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102117;
+inline constexpr auto kBuild = 26102118;
 
 void Start();
 void Stop();
@@ -24,6 +24,10 @@ void CheckUpdates(bool manual);
 void ShowSettingsBox(not_null<Window::SessionController*> controller);
 
 // Фокус-режим: для всех «не в сети», выбранные личные чаты спрятаны из списка и без уведомлений.
+// Все уведомления выключены одним переключателем (☰ и Настройки Плюма).
+[[nodiscard]] bool MuteAll();
+[[nodiscard]] rpl::producer<bool> MuteAllValue();
+void SetMuteAll(not_null<Window::SessionController*> controller, bool enabled);
 [[nodiscard]] bool FocusActive();
 [[nodiscard]] bool FocusHidden(not_null<const History*> history);
 [[nodiscard]] rpl::producer<bool> FocusValue();

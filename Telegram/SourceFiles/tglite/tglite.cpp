@@ -38,6 +38,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/painter.h"
 #include "ui/rp_widget.h"
 #include "window/window_controller.h"
+#include "window/notifications_manager.h"
 #include "mainwindow.h"
 #include "window/window_session_controller.h"
 #include "styles/style_layers.h"
@@ -749,6 +750,13 @@ FocusState &Focus() {
 	return result;
 }
 
+// «Выключить все уведомления» — одним переключателем, как LiteConfig.muteAll на Android. tglite.json: muteAll.
+rpl::variable<bool> &MuteAllVariable() {
+	static auto result = rpl::variable<bool>(
+		ReadState().value(u"muteAll"_q).toBool());
+	return result;
+}
+
 rpl::variable<bool> &FocusVariable() {
 	static auto result = rpl::variable<bool>(Focus().on);
 	return result;
@@ -863,6 +871,28 @@ bool HideRecentSearch() {
 	const auto state = ReadState();
 	return !state.contains(u"hideRecentSearch"_q)
 		|| state.value(u"hideRecentSearch"_q).toBool();
+}
+
+bool MuteAll() {
+	return MuteAllVariable().current();
+}
+
+rpl::producer<bool> MuteAllValue() {
+	return MuteAllVariable().value();
+}
+
+void SetMuteAll(not_null<Window::SessionController*> controller, bool enabled) {
+	if (MuteAll() == enabled) {
+		return;
+	}
+	SetState(u"muteAll"_q, enabled);
+	MuteAllVariable() = enabled;
+	if (enabled) {
+		Core::App().notifications().clearAll();
+	}
+	controller->showToast(enabled
+		? u"Все уведомления выключены: Плюм молчит. Включить — там же."_q
+		: u"Уведомления снова включены."_q);
 }
 
 bool FocusActive() {
@@ -1061,6 +1091,23 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				object_ptr<Ui::FlatLabel>(box, title, st::defaultSubsectionTitle),
 				st::defaultSubsectionTitlePadding);
 		};
+
+		section(u"Уведомления"_q);
+		const auto muteAll = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Выключить все уведомления"_q,
+			MuteAll()));
+		muteAll->checkedChanges() | rpl::on_next([=](bool checked) {
+			SetMuteAll(controller, checked);
+		}, muteAll->lifetime());
+		MuteAllValue() | rpl::on_next([=](bool on) {
+			muteAll->setChecked(on);
+		}, muteAll->lifetime());
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Ни всплывающих окон, ни звуков от чатов, групп и каналов. "
+			u"Сообщения приходят как обычно. Быстро — в меню ☰."_q,
+			st::boxDividerLabel));
 
 		section(u"Takt — помощник"_q);
 		box->addRow(object_ptr<Ui::LinkButton>(

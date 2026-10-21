@@ -800,6 +800,17 @@ void MainMenu::setupMenu() {
 	}) | rpl::on_next([=](bool on) {
 		TgLite::SetFocus(controller, on);
 	}, _menu->lifetime());
+	addAction(
+		rpl::single(u"Выключить все уведомления"_q),
+		{ &st::menuIconMute }
+	)->toggleOn(
+		TgLite::MuteAllValue()
+	)->toggledChanges(
+	) | rpl::filter([](bool on) {
+		return (on != TgLite::MuteAll());
+	}) | rpl::on_next([=](bool on) {
+		TgLite::SetMuteAll(controller, on);
+	}, _menu->lifetime());
 
 	_nightThemeToggle = addAction(
 		tr::lng_menu_night_mode(),
