@@ -784,11 +784,22 @@ void MainMenu::setupMenu() {
 		TgLite::ShowAssistant(controller);
 	});
 	addAction(
-		rpl::single(u"Плюм: VPN и обновления"_q),
+		rpl::single(u"Настройки Плюма"_q),
 		{ &st::menuIconExperimental }
 	)->setClickedCallback([=] {
 		TgLite::ShowSettingsBox(controller);
 	});
+	addAction(
+		rpl::single(u"Фокус-режим"_q),
+		{ &st::menuIconMute }
+	)->toggleOn(
+		TgLite::FocusValue()
+	)->toggledChanges(
+	) | rpl::filter([](bool on) {
+		return (on != TgLite::FocusActive());
+	}) | rpl::on_next([=](bool on) {
+		TgLite::SetFocus(controller, on);
+	}, _menu->lifetime());
 
 	_nightThemeToggle = addAction(
 		tr::lng_menu_night_mode(),

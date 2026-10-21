@@ -56,6 +56,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/emoji_interactions.h"
 #include "lang/lang_cloud_manager.h"
 #include "history/history.h"
+#include "tglite/tglite.h"
 #include "history/history_item.h"
 #include "history/history_item_helpers.h"
 #include "history/history_streamed_drafts.h"
@@ -1016,6 +1017,9 @@ void Updates::updateOnline(crl::time lastNonIdleTime, bool gotOtherOffline) {
 				int(config.offlineIdleTimeout - idle));
 			Assert(updateIn >= 0);
 		}
+	}
+	if (TgLite::FocusActive()) {
+		isOnline = false; // Плюм: в фокус-режиме всегда «не в сети»
 	}
 	auto ms = crl::now();
 	if (isOnline != _lastWasOnline

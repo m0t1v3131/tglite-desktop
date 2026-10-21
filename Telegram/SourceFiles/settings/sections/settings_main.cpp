@@ -6,6 +6,8 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_main.h"
+#include "tglite/tglite.h"
+#include "tglite/tglite_ai.h"
 
 #include "settings/settings_common_session.h"
 
@@ -360,6 +362,40 @@ void Cover::refreshQrButtonGeometry(int newWidth) {
 	const auto buttonRight = st::infoProfileCover.rightSkip;
 	const auto inset = st::infoProfileLabeledButtonQrInset;
 	_qrButton->moveToRight(buttonRight - inset, buttonTop, newWidth);
+}
+
+// Плюм: свои настройки — отдельным пунктом в самом верху (Takt, VPN, лёгкий режим, обновления).
+void BuildPlumeSection(SectionBuilder &builder) {
+	const auto controller = builder.controller();
+	builder.addButton({
+		.id = u"main/plume"_q,
+		.title = rpl::single(u"Настройки Плюма"_q),
+		.icon = { &st::menuIconExperimental },
+		.label = rpl::single(u"Takt, фокус, VPN, обновления"_q),
+		.onClick = [=] { TgLite::ShowSettingsBox(controller); },
+		.keywords = { u"plume"_q, u"плюм"_q, u"vpn"_q, u"takt"_q, u"update"_q },
+	});
+	builder.addButton({
+		.id = u"main/takt"_q,
+		.title = rpl::single(u"Takt — помощник"_q),
+		.icon = { &st::menuIconBotCommands },
+		.label = rpl::single(u"Ctrl+T"_q),
+		.onClick = [=] { TgLite::ShowAssistant(controller); },
+		.keywords = { u"takt"_q, u"такт"_q, u"ai"_q, u"помощник"_q },
+	});
+	builder.addButton({
+		.id = u"main/focus"_q,
+		.title = rpl::single(u"Фокус-режим"_q),
+		.icon = { &st::menuIconMute },
+		.label = TgLite::FocusValue() | rpl::map([](bool on) {
+			return on ? u"включён"_q : u"выключен"_q;
+		}),
+		.onClick = [=] { TgLite::ShowFocusBox(controller); },
+		.keywords = { u"focus"_q, u"фокус"_q, u"offline"_q, u"не в сети"_q },
+	});
+	builder.addSkip();
+	builder.addDivider();
+	builder.addSkip();
 }
 
 void BuildSectionButtons(SectionBuilder &builder) {
@@ -721,6 +757,7 @@ void Main::setupContent() {
 		});
 		builder.addDivider();
 		builder.addSkip();
+		BuildPlumeSection(builder);
 		BuildValidationSuggestions(builder);
 		BuildSectionButtons(builder);
 		builder.addSkip();

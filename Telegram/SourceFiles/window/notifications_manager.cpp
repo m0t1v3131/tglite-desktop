@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/audio/media_audio.h"
 #include "mtproto/mtproto_config.h"
 #include "history/history.h"
+#include "tglite/tglite.h"
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h"
 #include "history/view/history_view_chat_section.h"
@@ -316,6 +317,7 @@ System::SkipState System::skipNotification(
 	const auto messageType = (type == Data::ItemNotificationType::Message);
 	const auto thread = item->maybeNotificationThread();
 	if (!thread
+		|| TgLite::FocusHidden(item->history()) // Плюм: фокус-режим
 		|| !thread->currentNotification()
 		|| (messageType && item->skipNotification())
 		|| (type == Data::ItemNotificationType::Reaction

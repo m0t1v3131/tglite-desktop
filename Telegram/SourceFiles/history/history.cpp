@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history.h"
+#include "tglite/tglite.h"
 
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_item_preview.h"
@@ -3463,7 +3464,9 @@ bool History::trackUnreadMessages() const {
 }
 
 bool History::shouldBeInChatList() const {
-	if (peer->migrateTo() || !folderKnown()) {
+	if (TgLite::FocusHidden(this)) {
+		return false; // Плюм: фокус-режим прячет выбранные чаты
+	} else if (peer->migrateTo() || !folderKnown()) {
 		return false;
 	} else if (const auto community = peer->asChannel()
 		; community && community->isCommunity()) {

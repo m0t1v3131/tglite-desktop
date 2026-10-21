@@ -12,6 +12,16 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
+#include "api/api_updates.h"
+#include "api/api_user_privacy.h"
+#include "apiwrap.h"
+#include "boxes/peer_list_controllers.h"
+#include "data/data_peer.h"
+#include "data/data_session.h"
+#include "data/data_thread.h"
+#include "data/data_user.h"
+#include "history/history.h"
+#include "main/main_session.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "settings.h"
@@ -24,6 +34,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/buttons.h"
+#include "ui/wrap/vertical_layout.h"
 #include "ui/painter.h"
 #include "ui/rp_widget.h"
 #include "window/window_controller.h"
@@ -717,6 +728,129 @@ void OfferUpdate(const QString &url, const QString &notes) {
 	curtain = new UpdateCurtain(window->widget()->bodyWidget(), url, notes);
 }
 
+
+// Фокус-режим — как LiteFocus.java на Android. tglite.json: focusMode, focusChats (id чатов строками),
+// focusPrivacy<id аккаунта> — правило «Время захода» до включения, возвращается при выключении.
+struct FocusState {
+	bool on = false;
+	base::flat_set<uint64> chats;
+};
+
+FocusState &Focus() {
+	static auto result = [] {
+		auto state = FocusState();
+		const auto saved = ReadState();
+		state.on = saved.value(u"focusMode"_q).toBool();
+		for (const auto &id : saved.value(u"focusChats"_q).toArray()) {
+			state.chats.emplace(id.toString().toULongLong());
+		}
+		return state;
+	}();
+	return result;
+}
+
+rpl::variable<bool> &FocusVariable() {
+	static auto result = rpl::variable<bool>(Focus().on);
+	return result;
+}
+
+void SaveFocusChats() {
+	auto list = QJsonArray();
+	for (const auto id : Focus().chats) {
+		list.push_back(QString::number(id));
+	}
+	SetState(u"focusChats"_q, list);
+}
+
+void RefreshFocusChat(not_null<Main::Session*> session, uint64 id) {
+	if (const auto history = session->data().historyLoaded(PeerId(id))) {
+		history->updateChatListExistence();
+	}
+}
+
+QString FocusPrivacyKey(not_null<Main::Session*> session) {
+	return u"focusPrivacy"_q + QString::number(session->userId().bare);
+}
+
+QJsonArray PeersToJson(const std::vector<not_null<PeerData*>> &peers) {
+	auto result = QJsonArray();
+	for (const auto &peer : peers) {
+		result.push_back(QString::number(peer->id.value));
+	}
+	return result;
+}
+
+std::vector<not_null<PeerData*>> PeersFromJson(
+		not_null<Main::Session*> session,
+		const QJsonValue &value) {
+	auto result = std::vector<not_null<PeerData*>>();
+	for (const auto &id : value.toArray()) {
+		const auto peerId = PeerId(id.toString().toULongLong());
+		if (const auto peer = session->data().peerLoaded(peerId)) {
+			result.push_back(peer);
+		}
+	}
+	return result;
+}
+
+QJsonObject RuleToJson(const Api::UserPrivacy::Rule &rule) {
+	return QJsonObject{
+		{ u"option"_q, int(rule.option) },
+		{ u"always"_q, PeersToJson(rule.always.peers) },
+		{ u"alwaysPremiums"_q, rule.always.premiums },
+		{ u"alwaysMiniapps"_q, rule.always.miniapps },
+		{ u"never"_q, PeersToJson(rule.never.peers) },
+		{ u"neverPremiums"_q, rule.never.premiums },
+		{ u"neverMiniapps"_q, rule.never.miniapps },
+	};
+}
+
+Api::UserPrivacy::Rule RuleFromJson(
+		not_null<Main::Session*> session,
+		const QJsonObject &json) {
+	auto rule = Api::UserPrivacy::Rule();
+	rule.option = Api::UserPrivacy::Option(json.value(u"option"_q).toInt());
+	rule.always.peers = PeersFromJson(session, json.value(u"always"_q));
+	rule.always.premiums = json.value(u"alwaysPremiums"_q).toBool();
+	rule.always.miniapps = json.value(u"alwaysMiniapps"_q).toBool();
+	rule.never.peers = PeersFromJson(session, json.value(u"never"_q));
+	rule.never.premiums = json.value(u"neverPremiums"_q).toBool();
+	rule.never.miniapps = json.value(u"neverMiniapps"_q).toBool();
+	return rule;
+}
+
+void ApplyFocusPrivacy(not_null<Main::Session*> session, bool enabled) {
+	using Key = Api::UserPrivacy::Key;
+	const auto key = FocusPrivacyKey(session);
+	auto &privacy = session->api().userPrivacy();
+	if (enabled) {
+		privacy.reload(Key::LastSeen);
+		privacy.value(
+			Key::LastSeen
+		) | rpl::take(1) | rpl::on_next([=](Api::UserPrivacy::Rule rule) {
+			if (!ReadState().contains(key)) {
+				SetState(key, RuleToJson(rule));
+			}
+			auto nobody = Api::UserPrivacy::Rule();
+			nobody.option = Api::UserPrivacy::Option::Nobody;
+			session->api().userPrivacy().save(Key::LastSeen, nobody);
+		}, session->lifetime());
+	} else {
+		auto state = ReadState();
+		if (state.contains(key)) {
+			const auto saved = state.value(key).toObject();
+			state.remove(key);
+			WriteState(state);
+			privacy.save(Key::LastSeen, RuleFromJson(session, saved));
+		}
+	}
+}
+
+QString FocusChatName(not_null<Main::Session*> session, uint64 id) {
+	const auto peer = session->data().peerLoaded(PeerId(id));
+	return peer ? peer->name() : (u"Чат "_q + QString::number(id));
+}
+
 } // namespace
 
 bool HideStories() {
@@ -729,6 +863,132 @@ bool HideRecentSearch() {
 	const auto state = ReadState();
 	return !state.contains(u"hideRecentSearch"_q)
 		|| state.value(u"hideRecentSearch"_q).toBool();
+}
+
+bool FocusActive() {
+	return Focus().on;
+}
+
+bool FocusHidden(not_null<const History*> history) {
+	const auto &focus = Focus();
+	return focus.on
+		&& !focus.chats.empty()
+		&& focus.chats.contains(history->peer->id.value);
+}
+
+rpl::producer<bool> FocusValue() {
+	return FocusVariable().value();
+}
+
+void SetFocus(not_null<Window::SessionController*> controller, bool enabled) {
+	auto &focus = Focus();
+	if (focus.on == enabled) {
+		return;
+	}
+	focus.on = enabled;
+	SetState(u"focusMode"_q, enabled);
+	FocusVariable() = enabled;
+	const auto session = &controller->session();
+	ApplyFocusPrivacy(session, enabled);
+	session->api().updates().updateOnline();
+	for (const auto id : focus.chats) {
+		RefreshFocusChat(session, id);
+	}
+	controller->showToast(enabled
+		? (focus.chats.empty()
+			? u"Фокус включён: для всех вы не в сети. Чаты, которые спрятать, — в «Фокус-режим»."_q
+			: u"Фокус включён: для всех вы не в сети, выбранные чаты спрятаны."_q)
+		: u"Фокус выключен: «Время захода» как было, чаты вернулись."_q);
+}
+
+void ShowFocusBox(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Фокус-режим"_q));
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Для всех вы «не в сети» («Время захода» — «Никто», при выключении вернётся как было). "
+			u"Выбранные личные чаты пропадают из списка и не присылают уведомлений, "
+			u"найти их можно поиском. Включать быстро — в меню ☰ → «Фокус-режим»."_q,
+			st::boxLabel));
+		const auto toggle = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Фокус-режим включён"_q,
+			FocusActive()));
+		toggle->checkedChanges() | rpl::on_next([=](bool checked) {
+			SetFocus(controller, checked);
+		}, toggle->lifetime());
+		FocusValue() | rpl::on_next([=](bool on) {
+			toggle->setChecked(on);
+		}, toggle->lifetime());
+
+		box->addRow(
+			object_ptr<Ui::FlatLabel>(
+				box,
+				u"Скрытые чаты"_q,
+				st::defaultSubsectionTitle),
+			st::defaultSubsectionTitlePadding);
+		const auto list = box->addRow(object_ptr<Ui::VerticalLayout>(box));
+		const auto rebuild = std::make_shared<Fn<void()>>();
+		*rebuild = [=] {
+			list->clear();
+			if (Focus().chats.empty()) {
+				list->add(object_ptr<Ui::FlatLabel>(
+					list,
+					u"Пока нет — добавьте ниже."_q,
+					st::boxDividerLabel));
+			}
+			for (const auto id : Focus().chats) {
+				list->add(object_ptr<Ui::LinkButton>(
+					list,
+					FocusChatName(session, id) + u"  ✕"_q
+				))->setClickedCallback([=] {
+					Focus().chats.remove(id);
+					SaveFocusChats();
+					RefreshFocusChat(session, id);
+					(*rebuild)();
+				});
+			}
+			list->resizeToWidth(list->width());
+		};
+		(*rebuild)();
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Нажмите на чат, чтобы убрать его из скрытых."_q,
+			st::boxDividerLabel));
+		box->addRow(object_ptr<Ui::LinkButton>(
+			box,
+			u"+ Добавить чат"_q))->setClickedCallback([=] {
+			const auto chooser = std::make_shared<base::weak_qptr<Ui::BoxContent>>();
+			auto callback = [=](not_null<Data::Thread*> thread) {
+				const auto id = thread->peer()->id.value;
+				Focus().chats.emplace(id);
+				SaveFocusChats();
+				RefreshFocusChat(session, id);
+				(*rebuild)();
+				if (const auto strong = *chooser) {
+					strong->closeBox();
+				}
+			};
+			auto filter = [](not_null<Data::Thread*> thread) {
+				const auto user = thread->peer()->asUser();
+				return user && !user->isSelf() && !user->isBot()
+					&& !Focus().chats.contains(thread->peer()->id.value);
+			};
+			*chooser = controller->show(Box<PeerListBox>(
+				std::make_unique<ChooseRecipientBoxController>(
+					session,
+					std::move(callback),
+					std::move(filter)),
+				[](not_null<PeerListBox*> choose) {
+					choose->setTitle(rpl::single(u"Какой чат спрятать"_q));
+					choose->addButton(rpl::single(u"Отмена"_q), [=] {
+						choose->closeBox();
+					});
+				}));
+		});
+		box->addButton(rpl::single(u"Готово"_q), [=] { box->closeBox(); });
+	}));
 }
 
 void CheckUpdates(bool manual) {
@@ -795,10 +1055,41 @@ void Stop() {
 
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Плюм"_q));
+		box->setTitle(rpl::single(u"Настройки Плюма"_q));
+		const auto section = [=](const QString &title) {
+			box->addRow(
+				object_ptr<Ui::FlatLabel>(box, title, st::defaultSubsectionTitle),
+				st::defaultSubsectionTitlePadding);
+		};
+
+		section(u"Takt — помощник"_q);
+		box->addRow(object_ptr<Ui::LinkButton>(
+			box,
+			u"Открыть Takt (Ctrl+T)"_q))->setClickedCallback([=] {
+			box->closeBox();
+			ShowAssistant(controller);
+		});
+		const auto taktOpen = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Открывать Takt при запуске Плюма"_q,
+			ReadState().value(u"taktOpen"_q).toBool(true)));
+		taktOpen->checkedChanges() | rpl::on_next([](bool checked) {
+			SetState(u"taktOpen"_q, checked);
+		}, taktOpen->lifetime());
+
+		section(u"Фокус"_q);
+		box->addRow(object_ptr<Ui::LinkButton>(
+			box,
+			FocusActive()
+				? u"Фокус-режим: включён — настроить"_q
+				: u"Фокус-режим: выключен — настроить"_q))->setClickedCallback([=] {
+			ShowFocusBox(controller);
+		});
+
+		section(u"VPN StealthSurf"_q);
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
-			u"VPN StealthSurf: Плюм работает через вашу подписку, остальные программы не затрагиваются. "
+			u"Плюм работает через вашу подписку, остальные программы не затрагиваются. "
 			u"Ссылка — в личном кабинете StealthSurf или в Happ."_q,
 			st::boxLabel));
 		const auto url = box->addRow(object_ptr<Ui::InputField>(
@@ -842,6 +1133,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				}));
 			});
 		}
+		section(u"Лёгкий режим"_q);
 		const auto stories = box->addRow(object_ptr<Ui::Checkbox>(
 			box,
 			u"Скрыть истории (после перезапуска)"_q,
@@ -856,9 +1148,15 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		recent->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"hideRecentSearch"_q, checked);
 		}, recent->lifetime());
+		section(u"Обновления"_q);
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Версия "_q + QString::number(kBuild)
+				+ u". Плюм сам проверяет обновления при запуске и раз в 3 часа."_q,
+			st::boxDividerLabel));
 		box->addRow(object_ptr<Ui::LinkButton>(
 			box,
-			u"Обновление · версия "_q + QString::number(kBuild) + u" · Проверить"_q))->setClickedCallback([] {
+			u"Проверить обновления"_q))->setClickedCallback([] {
 			CheckUpdates(true);
 		});
 		box->addButton(rpl::single(u"Сохранить"_q), [=] {
