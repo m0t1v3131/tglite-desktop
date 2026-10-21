@@ -257,6 +257,7 @@ private:
 	object_ptr<Ui::IconButton> _search;
 	object_ptr<Ui::IconButton> _infoToggle;
 	object_ptr<Ui::IconButton> _menuToggle;
+	Ui::AbstractButton *_takt = nullptr; // Plume: Takt в этом чате
 	base::unique_qptr<Ui::PopupMenu> _menu;
 	base::weak_qptr<Ui::IconButton> _menuButton;
 

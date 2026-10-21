@@ -68,6 +68,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_chat.h"
+#include "tglite/tglite_ai.h"
 #include "styles/style_info.h"
 
 #include <QtGui/QWindow>
@@ -158,6 +159,12 @@ TopBarWidget::TopBarWidget(
 	});
 	_groupCall->setClickedCallback([=] { groupCall(); });
 	_menuToggle->addClickHandler([=](auto) { showPeerMenu(); });
+	_takt = TgLite::CreateChatTaktButton(this, [=] {
+		if (const auto peer = _activeChat.key.peer()) {
+			TgLite::ShowAssistantForChat(_controller, peer, 0, QString());
+		}
+	});
+	_takt->hide();
 	_menuToggle->setAcceptBoth(true, true);
 	_infoToggle->setClickedCallback([=] { toggleInfoSection(); });
 	_back->setAcceptBoth();
@@ -1302,6 +1309,14 @@ void TopBarWidget::updateControlsGeometry() {
 	if (!_search->isHidden()) {
 		_rightTaken += _search->width() + st::topBarCallSkip;
 	}
+	if (_takt) {
+		_takt->moveToRight(
+			_rightTaken,
+			otherButtonsTop + (_search->height() - _takt->height()) / 2);
+	}
+	if (_takt && !_takt->isHidden()) {
+		_rightTaken += _takt->width() + st::topBarCallSkip;
+	}
 
 	updateMembersShowArea();
 }
@@ -1439,6 +1454,11 @@ void TopBarWidget::updateControlsVisibility() {
 	}();
 	_groupCall->setVisible(historyMode
 		&& groupCallsEnabled
+		&& !_chooseForReportReason);
+	if (_takt) _takt->setVisible(historyMode
+		&& _activeChat.key.peer()
+		&& !_activeChat.key.peer()->isSelf()
+		&& !_activeChat.key.peer()->isServiceUser()
 		&& !_chooseForReportReason);
 
 	if (_membersShowArea) {

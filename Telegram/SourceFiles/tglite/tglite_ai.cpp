@@ -20,6 +20,8 @@ Licensed under GNU GPL v. 3.
 #include "base/timer.h"
 #include "base/random.h"
 #include "base/unixtime.h"
+#include "data/data_channel.h"
+#include "data/data_chat.h"
 #include "data/data_chat_filters.h"
 #include "data/data_folder.h"
 #include "data/data_peer.h"
@@ -58,6 +60,7 @@ Licensed under GNU GPL v. 3.
 #include <QtCore/QRegularExpression>
 #include <QtGui/QKeyEvent>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
@@ -174,13 +177,28 @@ QJsonArray Tools() {
 		Tool(u"send_message"_q,
 			u"Отправить сообщение в один чат (пользователь подтверждает)."_q,
 			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
-			  { u"text"_q, Prop(u"string"_q, u"текст"_q) } },
+			  { u"text"_q, Prop(u"string"_q, u"текст"_q) },
+			  { u"reply_to_message_id"_q, Prop(u"integer"_q, u"#номер сообщения, на которое ответить, необязательно"_q) } },
 			{ u"chat_id"_q, u"text"_q }),
+		Tool(u"forward_message"_q,
+			u"Переслать одно сообщение в один чат (пользователь подтверждает)."_q,
+			{ { u"from_chat_id"_q, Prop(u"string"_q, u"откуда — id чата"_q) },
+			  { u"message_id"_q, Prop(u"integer"_q, u"#номер сообщения из read_messages"_q) },
+			  { u"to_chat_id"_q, Prop(u"string"_q, u"куда — id чата или человека"_q) } },
+			{ u"from_chat_id"_q, u"message_id"_q, u"to_chat_id"_q }),
+		Tool(u"group_members"_q,
+			u"Участники группы: id, имя, @username, была ли уже переписка. Без вас и ботов."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id группы из list_chats"_q) },
+			  { u"limit"_q, Prop(u"integer"_q, u"сколько, по умолчанию 200, максимум 1000"_q) } },
+			{ u"chat_id"_q }),
 		Tool(u"broadcast"_q,
-			u"Разослать одно сообщение в несколько чатов (≤25 за раз, ≤60 в сутки, паузы 25–60 с; пользователь подтверждает). Только чаты, где уже есть переписка или где пользователь участник."_q,
-			{ { u"chat_ids"_q, IdsProp(u"id чатов"_q) },
-			  { u"text"_q, Prop(u"string"_q, u"текст"_q) } },
-			{ u"chat_ids"_q, u"text"_q }),
+			u"Каждому лично: переслать сообщение и/или написать текст в несколько чатов или людям (id из list_chats или group_members). "
+			u"≤25 за раз, ≤60 в сутки, паузы 25–60 с; пользователь подтверждает. Нужен text, или forward_*, или оба (сначала пересылка, потом текст)."_q,
+			{ { u"chat_ids"_q, IdsProp(u"id чатов или людей"_q) },
+			  { u"text"_q, Prop(u"string"_q, u"текст, необязательно при пересылке"_q) },
+			  { u"forward_from_chat_id"_q, Prop(u"string"_q, u"откуда переслать — id чата, необязательно"_q) },
+			  { u"forward_message_id"_q, Prop(u"integer"_q, u"#номер сообщения для пересылки, необязательно"_q) } },
+			{ u"chat_ids"_q }),
 		Tool(u"takt_status"_q,
 			u"Состояние Такта (бот, который отвечает людям за пользователя): включён ли, темп, сухой прогон, «меня нет до», "
 			u"кто ждёт ответа пользователя, последние записи журнала (кому и что ответил или ответил бы) и чаты Такта. "
@@ -216,13 +234,17 @@ QString SystemPrompt() {
 	return u"Ты — Takt, помощник внутри Плюма, личного Telegram-клиента Александра. Сейчас "_q
 		+ QDateTime::currentDateTime().toString(u"dd.MM.yyyy HH:mm"_q) + u". "
 		u"Отвечай по-русски, коротко и просто, обращайся на «вы». Делай то, что просят, с помощью инструментов: "
-		u"находи чаты через list_chats, папки — list_folders, создавай и меняй папки, читай сообщения, отправляй. "
+		u"находи чаты через list_chats, папки — list_folders, создавай и меняй папки, читай сообщения (у каждого есть #номер), отправляй. "
+		u"Если просят написать или переслать что-то всем участникам группы лично: найди группу (list_chats), "
+		u"нужное сообщение (read_messages, его #номер), участников (group_members), затем broadcast с их id — "
+		u"forward_from_chat_id и forward_message_id, чтобы переслать сообщение, и text — что дописать от себя. "
+		u"За раз — до 25 человек; если больше, запусти первую часть и скажи, сколько осталось. "
 		u"Ещё ты управляешь ботом Такт: он сам отвечает людям за Александра, пока тот занят (через «Автоматизацию чатов» Telegram). "
 		u"Что Такт ответил, кто ждёт, черновики — takt_status; команды Такту (пауза, «меня нет до», правила, факты, темп) — takt_do; "
 		u"отправить или поправить черновик — takt_entry; режим для человека — takt_chat_mode. "
 		u"Если просят ответить человеку, по чьему сообщению у Такта есть черновик или ответ сухого прогона, — используй takt_entry, "
 		u"иначе send_message. Показывая черновики, пиши кому, что спросили и что Такт предлагает ответить. "
-		u"Перед отправкой и рассылкой клиент сам спросит подтверждение — не переспрашивай лишний раз. "
+		u"Перед отправкой, пересылкой и рассылкой клиент сам спросит подтверждение — не переспрашивай лишний раз. "
 		u"Рассылки только небольшие (до 25 чатов), это личный аккаунт — массовые рассылки могут привести к блокировке."_q;
 }
 
@@ -254,7 +276,8 @@ std::vector<not_null<History*>> AllChats(not_null<Main::Session*> session) {
 History *FindChat(not_null<Main::Session*> session, const QString &id) {
 	auto ok = false;
 	const auto value = id.toULongLong(&ok);
-	return ok ? session->data().historyLoaded(PeerId(PeerIdHelper(value))) : nullptr;
+	const auto peer = ok ? session->data().peerLoaded(PeerId(PeerIdHelper(value))) : nullptr;
+	return peer ? session->data().history(peer).get() : nullptr;
 }
 
 QString ChatId(not_null<History*> history) {
@@ -373,6 +396,7 @@ public:
 	}
 
 	void showWindow();
+	void openForChat(not_null<PeerData*> peer, MsgId msgId, const QString &text);
 	void toggleWindow();
 	void closeWindow();
 	void switchDock();
@@ -472,6 +496,30 @@ private:
 	}
 
 	void render();
+	void clearChat();
+
+	// Что Takt знает о чате, из которого его позвали (кнопка «Takt» в шапке чата или «Спросить Takt» у сообщения).
+	[[nodiscard]] QString chatPrompt() const {
+		if (!_chatPeer || _onDone) {
+			return QString();
+		}
+		const auto id = QString::number(_chatPeer.value);
+		auto result = u" Владелец позвал тебя прямо из чата «"_q + _chatTitle + u"» (chat_id "_q + id + u", "_q
+			+ (_chatGroup ? u"группа или канал"_q : u"личный чат"_q)
+			+ u"). «Этот чат», «сюда», «здесь», «участникам», «всем» — про него; "
+			u"не ищи его через list_chats, сразу бери этот chat_id (участники — group_members, сообщения — read_messages)."_q;
+		if (_chatMsg) {
+			const auto msg = QString::number(_chatMsg.bare);
+			result += u" Он выбрал в этом чате сообщение #"_q + msg
+				+ (_chatMsgText.isEmpty()
+					? u" (вложение)"_q
+					: u": «"_q + _chatMsgText.left(500) + u"»"_q)
+				+ u". «Это сообщение» — оно: переслать — forward_message или broadcast с forward_from_chat_id="_q + id
+				+ u" и forward_message_id="_q + msg
+				+ u"; ответить на него — send_message с reply_to_message_id="_q + msg + u"."_q;
+		}
+		return result;
+	}
 
 	[[nodiscard]] static bool IsUserText(const QJsonValue &v) {
 		const auto o = v.toObject();
@@ -508,7 +556,7 @@ private:
 		request.setRawHeader("X-Lite-Key", key.toUtf8());
 		request.setTransferTimeout(120000);
 		const auto body = QJsonDocument(QJsonObject{
-			{ u"system"_q, SystemPrompt() },
+			{ u"system"_q, SystemPrompt() + chatPrompt() },
 			{ u"messages"_q, _messages },
 			{ u"tools"_q, Tools() },
 		}).toJson(QJsonDocument::Compact);
@@ -629,7 +677,7 @@ private:
 		const auto ids = [&](const QString &key) {
 			auto result = std::vector<not_null<History*>>();
 			for (const auto &v : input.value(key).toArray()) {
-				if (const auto history = FindChat(_session, v.toString())) {
+				if (const auto history = FindChat(_session, v.toVariant().toString())) {
 					result.push_back(history);
 				}
 			}
@@ -724,7 +772,7 @@ private:
 				std::move(never));
 			saveFilter(filter, done, u"папка изменена"_q);
 		} else if (name == u"read_messages"_q) {
-			const auto history = FindChat(_session, input.value(u"chat_id"_q).toString());
+			const auto history = FindChat(_session, input.value(u"chat_id"_q).toVariant().toString());
 			if (!history) {
 				done(u"нет такого чата"_q, true);
 				return;
@@ -732,22 +780,60 @@ private:
 			add(u"· читаю «"_q + history->peer->name() + u"»"_q);
 			readMessages(history, std::clamp(input.value(u"limit"_q).toInt(20), 1, 50), done);
 		} else if (name == u"send_message"_q) {
-			const auto history = FindChat(_session, input.value(u"chat_id"_q).toString());
+			const auto history = FindChat(_session, input.value(u"chat_id"_q).toVariant().toString());
 			const auto text = input.value(u"text"_q).toString();
+			const auto replyTo = MsgId(input.value(u"reply_to_message_id"_q).toInt());
 			if (!history || text.trimmed().isEmpty()) {
 				done(u"нет такого чата или пустой текст"_q, true);
 				return;
 			}
 			confirm(
-				u"Отправить в «"_q + history->peer->name() + u"»:\n\n"_q + text,
+				u"Отправить в «"_q + history->peer->name() + u"»"_q
+					+ (replyTo ? u" ответом на сообщение"_q : QString())
+					+ u":\n\n"_q + text,
 				[=] {
-					send(history, text);
+					send(history, text, replyTo);
 					add(u"· отправлено в «"_q + history->peer->name() + u"»"_q);
 					done(u"отправлено"_q, false);
 				},
 				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"forward_message"_q) {
+			const auto from = FindChat(_session, input.value(u"from_chat_id"_q).toVariant().toString());
+			const auto to = FindChat(_session, input.value(u"to_chat_id"_q).toVariant().toString());
+			const auto messageId = MsgId(input.value(u"message_id"_q).toInt());
+			if (!from || !to || !messageId) {
+				done(u"нет такого чата или сообщения"_q, true);
+				return;
+			}
+			confirm(
+				u"Переслать сообщение #"_q + QString::number(messageId.bare) + u" из «"_q
+					+ from->peer->name() + u"» в «"_q + to->peer->name() + u"»?"_q,
+				[=] {
+					forward(from, messageId, to, [=](QString error) {
+						if (error.isEmpty()) {
+							add(u"· переслано в «"_q + to->peer->name() + u"»"_q);
+						}
+						done(error.isEmpty() ? u"переслано"_q : u"не переслано: "_q + error, !error.isEmpty());
+					});
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"group_members"_q) {
+			const auto history = FindChat(_session, input.value(u"chat_id"_q).toVariant().toString());
+			if (!history || history->peer->isUser()) {
+				done(u"это не группа"_q, true);
+				return;
+			}
+			add(u"· смотрю участников «"_q + history->peer->name() + u"»"_q);
+			members(history->peer, std::clamp(input.value(u"limit"_q).toInt(200), 1, 1000), done);
 		} else if (name == u"broadcast"_q) {
-			broadcast(ids(u"chat_ids"_q), input.value(u"text"_q).toString(), done);
+			const auto from = FindChat(_session, input.value(u"forward_from_chat_id"_q).toVariant().toString());
+			const auto fromId = MsgId(input.value(u"forward_message_id"_q).toInt());
+			broadcast(
+				ids(u"chat_ids"_q),
+				input.value(u"text"_q).toString(),
+				(from && fromId) ? from->peer.get() : nullptr,
+				fromId,
+				done);
 		} else if (name == u"takt_status"_q) {
 			add(u"· смотрю, что делал Такт"_q);
 			takt(u"/api/state"_q, std::nullopt, [=](QJsonObject data, QString error) {
@@ -1080,7 +1166,8 @@ private:
 							from = u"я"_q;
 						}
 						const auto date = QDateTime::fromSecsSinceEpoch(m.vdate().v);
-						lines.push_front(date.toString(u"dd.MM HH:mm"_q) + u" "_q
+						lines.push_front(u"#"_q + QString::number(m.vid().v) + u" "_q
+							+ date.toString(u"dd.MM HH:mm"_q) + u" "_q
 							+ (from.isEmpty() ? history->peer->name() : from)
 							+ u": "_q + qs(m.vmessage()));
 					}, [](const auto &) {});
@@ -1092,8 +1179,12 @@ private:
 		}).send();
 	}
 
-	void send(not_null<History*> history, const QString &text) {
-		auto message = Api::MessageToSend(Api::SendAction(history));
+	void send(not_null<History*> history, const QString &text, MsgId replyTo = 0) {
+		auto action = Api::SendAction(history);
+		if (replyTo) {
+			action.replyTo = FullReplyTo{ .messageId = FullMsgId(history->peer->id, replyTo) };
+		}
+		auto message = Api::MessageToSend(action);
 		message.textWithTags = { text, TextWithTags::Tags() };
 		_session->api().sendMessage(std::move(message));
 	}
@@ -1101,9 +1192,11 @@ private:
 	void broadcast(
 			std::vector<not_null<History*>> chats,
 			const QString &text,
+			PeerData *from,
+			MsgId fromId,
 			Fn<void(QString, bool)> done) {
-		if (chats.empty() || text.trimmed().isEmpty()) {
-			done(u"нет чатов или пустой текст"_q, true);
+		if (chats.empty() || (text.trimmed().isEmpty() && !from)) {
+			done(u"нет чатов, текста или сообщения для пересылки"_q, true);
 			return;
 		}
 		if (int(chats.size()) > kBroadcastOnce) {
@@ -1128,12 +1221,16 @@ private:
 		confirm(
 			u"Разослать в "_q + QString::number(chats.size()) + u" чатов (≈"_q
 				+ QString::number(minutes) + u" мин, с паузами):\n"_q
-				+ names.join(u", "_q) + u"\n\n"_q + text,
+				+ names.join(u", "_q) + u"\n\n"_q
+				+ (from ? u"Переслать сообщение #"_q + QString::number(fromId.bare)
+					+ u" из «"_q + from->name() + u"»"_q
+					+ (text.trimmed().isEmpty() ? QString() : u" и написать:\n"_q) : QString())
+				+ text,
 			[=] {
 				SetState(u"bcDay"_q, today);
 				SetState(u"bcCount"_q, sentToday + int(chats.size()));
 				add(u"· рассылка запущена: "_q + QString::number(chats.size()) + u" чатов"_q);
-				sendNext(chats, text, 0);
+				sendNext(chats, text, from, fromId, 0);
 				done(u"рассылка запущена, идёт в фоне с паузами"_q, false);
 			},
 			[=] { done(u"пользователь отменил"_q, false); });
@@ -1142,19 +1239,159 @@ private:
 	void sendNext(
 			std::vector<not_null<History*>> chats,
 			QString text,
+			PeerData *from,
+			MsgId fromId,
 			int index) {
 		if (index >= int(chats.size())) {
 			add(u"· рассылка завершена"_q);
 			return;
 		}
-		send(chats[index], text);
-		add(u"· "_q + QString::number(index + 1) + u"/"_q
-			+ QString::number(chats.size()) + u" — «"_q
-			+ chats[index]->peer->name() + u"»"_q);
-		const auto delay = 25000 + int(base::RandomValue<uint32>() % 35000);
-		base::call_delayed(delay, _session, [=] {
-			sendNext(chats, text, index + 1);
-		});
+		const auto history = chats[index];
+		const auto next = [=](QString error) {
+			if (error.isEmpty()) {
+				if (!text.trimmed().isEmpty()) {
+					send(history, text);
+				}
+				add(u"· "_q + QString::number(index + 1) + u"/"_q
+					+ QString::number(chats.size()) + u" — «"_q
+					+ history->peer->name() + u"»"_q);
+			} else {
+				add(u"· "_q + QString::number(index + 1) + u"/"_q
+					+ QString::number(chats.size()) + u" — «"_q
+					+ history->peer->name() + u"» не получилось: "_q + error);
+			}
+			const auto delay = 25000 + int(base::RandomValue<uint32>() % 35000);
+			base::call_delayed(delay, _session, [=] {
+				sendNext(chats, text, from, fromId, index + 1);
+			});
+		};
+		if (from) {
+			forward(_session->data().history(from), fromId, history, next);
+		} else {
+			next(QString());
+		}
+	}
+
+	void forward(
+			not_null<History*> from,
+			MsgId messageId,
+			not_null<History*> to,
+			Fn<void(QString)> done) {
+		const auto session = _session;
+		session->api().request(MTPmessages_ForwardMessages(
+			MTP_flags(0),
+			from->peer->input(),
+			MTP_vector<MTPint>(1, MTP_int(messageId.bare)),
+			MTP_vector<MTPlong>(1, MTP_long(base::RandomValue<uint64>())),
+			to->peer->input(),
+			MTPint(),
+			MTPInputReplyTo(),
+			MTPint(),
+			MTPint(),
+			MTP_inputPeerEmpty(),
+			MTPInputQuickReplyShortcut(),
+			MTPlong(),
+			MTPint(),
+			MTPlong(),
+			MTPSuggestedPost()
+		)).done([=](const MTPUpdates &result) {
+			session->api().applyUpdates(result);
+			done(QString());
+		}).fail([=](const MTP::Error &error) {
+			done(error.type());
+		}).send();
+	}
+
+	// Участники группы: id, имя, @username, была ли переписка. Без себя и ботов.
+	void members(not_null<PeerData*> peer, int limit, Fn<void(QString, bool)> done) {
+		const auto session = _session;
+		const auto finish = [=](std::vector<UserId> list) {
+			auto lines = QStringList();
+			for (const auto id : list) {
+				const auto user = session->data().userLoaded(id);
+				if (!user || user->isSelf() || user->isBot() || user->isInaccessible()) {
+					continue;
+				}
+				const auto history = session->data().historyLoaded(user->id);
+				const auto talked = history && history->chatListTimeId() != 0;
+				lines.push_back(QString::number(user->id.value) + u" | "_q + user->name()
+					+ (user->username().isEmpty() ? QString() : u" | @"_q + user->username())
+					+ (talked ? u" | переписка есть"_q : u" | переписки не было"_q));
+				if (lines.size() >= limit) {
+					break;
+				}
+			}
+			done(lines.isEmpty()
+				? u"участников не видно (нет доступа к списку)"_q
+				: u"участников: "_q + QString::number(lines.size()) + u"\n"_q + lines.join('\n'), false);
+		};
+		if (const auto chat = peer->asChat()) {
+			session->api().request(MTPmessages_GetFullChat(
+				MTP_long(peerToChat(chat->id).bare)
+			)).done([=](const MTPmessages_ChatFull &result) {
+				const auto &data = result.data();
+				session->data().processUsers(data.vusers());
+				session->data().processChats(data.vchats());
+				auto list = std::vector<UserId>();
+				data.vfull_chat().match([&](const MTPDchatFull &full) {
+					full.vparticipants().match([&](const MTPDchatParticipants &p) {
+						for (const auto &participant : p.vparticipants().v) {
+							participant.match([&](const auto &d) {
+								list.push_back(UserId(d.vuser_id().v));
+							});
+						}
+					}, [](const auto &) {});
+				}, [](const auto &) {});
+				finish(std::move(list));
+			}).fail([=](const MTP::Error &error) {
+				done(u"не удалось получить участников: "_q + error.type(), true);
+			}).send();
+			return;
+		}
+		const auto channel = peer->asChannel();
+		if (!channel || channel->isBroadcast()) {
+			done(u"у канала участников не посмотреть — только у групп"_q, true);
+			return;
+		}
+		const auto all = std::make_shared<std::vector<UserId>>();
+		const auto page = std::make_shared<Fn<void(int)>>();
+		*page = [=](int offset) {
+			session->api().request(MTPchannels_GetParticipants(
+				channel->inputChannel(),
+				MTP_channelParticipantsRecent(),
+				MTP_int(offset),
+				MTP_int(200),
+				MTP_long(0)
+			)).done([=](const MTPchannels_ChannelParticipants &result) {
+				auto got = 0;
+				result.match([&](const MTPDchannels_channelParticipants &data) {
+					session->data().processUsers(data.vusers());
+					session->data().processChats(data.vchats());
+					for (const auto &participant : data.vparticipants().v) {
+						++got;
+						participant.match([](const MTPDchannelParticipantBanned &) {
+						}, [](const MTPDchannelParticipantLeft &) {
+						}, [&](const auto &d) {
+							all->push_back(UserId(d.vuser_id().v));
+						});
+					}
+				}, [](const MTPDchannels_channelParticipantsNotModified &) {});
+				if (got == 200 && int(all->size()) < limit) {
+					(*page)(offset + got);
+				} else {
+					finish(*all);
+					*page = nullptr;
+				}
+			}).fail([=](const MTP::Error &error) {
+				if (all->empty()) {
+					done(u"не удалось получить участников: "_q + error.type(), true);
+				} else {
+					finish(*all);
+				}
+				*page = nullptr;
+			}).send();
+		};
+		(*page)(0);
 	}
 
 	void finish(const QString &result, bool ok) {
@@ -1180,6 +1417,12 @@ private:
 	QJsonArray _messages;
 	QJsonArray _results;
 	std::vector<Line> _lines;
+	PeerId _chatPeer = 0;
+	QString _chatTitle;
+	bool _chatGroup = false;
+	MsgId _chatMsg = 0;
+	QString _chatMsgText;
+	Fn<void()> _chatChanged;
 	QString _lastText;
 	Fn<void(QString, bool)> _onDone;
 	int _steps = 0;
@@ -1285,7 +1528,13 @@ void Assistant::showWindow() {
 		"QLabel#title { font-size: 18px; font-weight: 700; }"
 		"QPushButton#head { border: none; color: #7a8592; padding: 4px 6px; font-size: 16px; }"
 		"QPushButton#head:hover { color: #2a5ea8; }"
-		"QLabel#subtitle { color: #7a8592; font-size: 12px; }"_q);
+		"QLabel#subtitle { color: #7a8592; font-size: 12px; }"
+		"QWidget#chatBar { background: #eef3fb; border-bottom: 1px solid #dfe3e8; }"
+		"QWidget#chatBar QWidget { background: transparent; }"
+		"QWidget#chatBar QPushButton { background: #ffffff; }"
+		"QWidget#chatBar QPushButton#head { background: transparent; }"
+		"QLabel#chatTitle { font-weight: 600; }"
+		"QLabel#chatMsg { color: #5b6672; font-size: 12px; }"_q);
 
 	const auto weak = base::make_weak(this);
 	const auto layout = new QVBoxLayout(host);
@@ -1333,6 +1582,15 @@ void Assistant::showWindow() {
 	}
 	layout->addWidget(header);
 
+	// Полоса «в чате «X»» с кнопками частых просьб — когда Takt позвали из чата.
+	const auto chatBar = new QWidget(host);
+	chatBar->setObjectName(u"chatBar"_q);
+	chatBar->setAttribute(Qt::WA_StyledBackground);
+	const auto chatLayout = new QVBoxLayout(chatBar);
+	chatLayout->setContentsMargins(12, 8, 12, 8);
+	chatBar->hide();
+	layout->addWidget(chatBar);
+
 	const auto feed = new QTextBrowser(host);
 	feed->setOpenExternalLinks(true);
 	feed->setFrameShape(QFrame::NoFrame);
@@ -1375,6 +1633,94 @@ void Assistant::showWindow() {
 	quickButton(u"Пауза"_q, u"Такт, стоп — никому не отвечай, пока не скажу"_q);
 	quickButton(u"Продолжить"_q, u"Такт, старт — продолжай отвечать"_q);
 	quick->addStretch(1);
+
+	const auto fill = [=](const QString &text) {
+		input->setPlainText(text);
+		input->setFocus();
+		input->moveCursor(QTextCursor::End);
+	};
+	const auto chatAlive = QPointer<QWidget>(chatBar);
+	const auto chatInner = std::make_shared<QPointer<QWidget>>();
+	_chatChanged = [=] {
+		if (!chatAlive) {
+			return;
+		}
+		delete chatInner->data();
+		if (!_chatPeer) {
+			chatBar->hide();
+			return;
+		}
+		const auto inner = new QWidget(chatBar);
+		*chatInner = inner;
+		const auto box = new QVBoxLayout(inner);
+		box->setContentsMargins(0, 0, 0, 0);
+		box->setSpacing(6);
+		const auto top = new QHBoxLayout();
+		const auto name = u"«"_q + _chatTitle + u"»"_q;
+		const auto label = new QLabel(u"В чате "_q + name, inner);
+		label->setObjectName(u"chatTitle"_q);
+		label->setWordWrap(true);
+		top->addWidget(label, 1);
+		const auto close = new QPushButton(u"\u00D7"_q, inner);
+		close->setObjectName(u"head"_q);
+		close->setCursor(Qt::PointingHandCursor);
+		close->setToolTip(u"Не про этот чат"_q);
+		QObject::connect(close, &QPushButton::clicked, [=] {
+			QTimer::singleShot(0, [=] {
+				if (weak) {
+					clearChat();
+				}
+			});
+		});
+		top->addWidget(close, 0, Qt::AlignTop);
+		box->addLayout(top);
+		if (_chatMsg) {
+			const auto text = _chatMsgText.simplified();
+			const auto msg = new QLabel(
+				u"Сообщение: "_q + (text.isEmpty()
+					? u"вложение"_q
+					: u"«"_q + (text.size() > 140 ? text.left(139) + u"…"_q : text) + u"»"_q),
+				inner);
+			msg->setObjectName(u"chatMsg"_q);
+			msg->setWordWrap(true);
+			box->addWidget(msg);
+		}
+		const auto grid = new QGridLayout();
+		grid->setSpacing(6);
+		auto index = 0;
+		const auto chip = [&](const QString &text, Fn<void()> click) {
+			const auto button = new QPushButton(text, inner);
+			button->setCursor(Qt::PointingHandCursor);
+			QObject::connect(button, &QPushButton::clicked, [=] {
+				QTimer::singleShot(0, [=] {
+					if (weak) {
+						click();
+					}
+				});
+			});
+			grid->addWidget(button, index / 2, index % 2);
+			++index;
+		};
+		const auto group = _chatGroup;
+		if (_chatMsg) {
+			if (group) {
+				chip(u"Разослать это участникам"_q, [=] { fill(u"Перешли это сообщение каждому участнику "_q + name + u" в личку и допиши: "_q); });
+			}
+			chip(u"Переслать"_q, [=] { fill(u"Перешли это сообщение в "_q); });
+			chip(u"Ответить на него"_q, [=] { fill(u"Ответь в "_q + name + u" на это сообщение: "_q); });
+		} else if (group) {
+			chip(u"Разослать участникам"_q, [=] { fill(u"Напиши каждому участнику "_q + name + u" в личку: "_q); });
+		}
+		chip(u"Написать сюда"_q, [=] { fill(u"Напиши в "_q + name + u": "_q); });
+		chip(u"Сводка чата"_q, [=] { askNow(u"Коротко перескажи последние сообщения в "_q + name + u": о чём говорят и что ждут от меня."_q); });
+		if (group) {
+			chip(u"Участники"_q, [=] { askNow(u"Кто участники "_q + name + u"? С кем у меня ещё не было переписки?"_q); });
+		}
+		box->addLayout(grid);
+		chatLayout->addWidget(inner);
+		chatBar->show();
+	};
+	_chatChanged();
 
 	const auto submit = [=] {
 		if (!weak || _busy) {
@@ -1459,12 +1805,46 @@ void Assistant::showWindow() {
 	input->setFocus();
 }
 
+void Assistant::openForChat(
+		not_null<PeerData*> peer,
+		MsgId msgId,
+		const QString &text) {
+	const auto changed = (_chatPeer != peer->id) || (_chatMsg != msgId);
+	_chatPeer = peer->id;
+	_chatTitle = peer->name();
+	_chatGroup = !peer->isUser();
+	_chatMsg = msgId;
+	_chatMsgText = text;
+	if (changed) {
+		add(u"· дальше — про чат «"_q + _chatTitle + u"»"_q
+			+ (msgId ? u" и выбранное сообщение"_q : QString()));
+	}
+	showWindow();
+	if (_chatChanged) {
+		_chatChanged();
+	}
+}
+
+void Assistant::clearChat() {
+	if (!_chatPeer) {
+		return;
+	}
+	_chatPeer = 0;
+	_chatMsg = 0;
+	_chatMsgText = QString();
+	add(u"· дальше — не про конкретный чат"_q);
+	if (_chatChanged) {
+		_chatChanged();
+	}
+}
+
 void Assistant::closeWindow() {
 	SetState(u"taktOpen"_q, false);
 	if (!_window) {
 		return;
 	} else if (_docked) {
 		_changed = nullptr;
+		_chatChanged = nullptr;
 		_controller->window().showRightColumn(nullptr);
 	} else {
 		_window->hide();
@@ -1484,6 +1864,7 @@ void Assistant::toggleWindow() {
 void Assistant::switchDock() {
 	SetState(u"taktFloat"_q, _docked);
 	_changed = nullptr;
+	_chatChanged = nullptr;
 	if (_docked) {
 		_controller->window().showRightColumn(nullptr);
 	} else {
@@ -1619,6 +2000,18 @@ void ShowAssistant(not_null<Window::SessionController*> controller) {
 	AssistantFor(controller)->showWindow();
 }
 
+void ShowAssistantForChat(
+		not_null<Window::SessionController*> controller,
+		not_null<PeerData*> peer,
+		MsgId msgId,
+		const QString &text) {
+	if (AiKey().isEmpty()) {
+		ShowKeyBox(controller);
+		return;
+	}
+	AssistantFor(controller)->openForChat(peer, msgId, text);
+}
+
 void ToggleAssistant(not_null<Window::SessionController*> controller) {
 	if (AiKey().isEmpty()) {
 		ShowKeyBox(controller);
@@ -1730,6 +2123,17 @@ void InstallHotkey() {
 }
 
 } // namespace
+
+Ui::AbstractButton *CreateChatTaktButton(
+		not_null<QWidget*> parent,
+		Fn<void()> click) {
+	const auto result = new TaktButton(parent, rpl::single(0));
+	result->resize(result->width(), style::ConvertScale(30));
+	result->setToolTip(u"Takt в этом чате: разослать участникам, переслать, ответить, сводка"_q);
+	result->setAccessibleName(u"Takt в этом чате"_q);
+	result->setClickedCallback(std::move(click));
+	return result;
+}
 
 Ui::AbstractButton *CreateTaktButton(
 		not_null<QWidget*> parent,

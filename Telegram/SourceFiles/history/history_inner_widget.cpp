@@ -80,6 +80,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/message_field.h"
 #include "chat_helpers/emoji_interactions.h"
 #include "history/history_widget.h"
+#include "tglite/tglite_ai.h"
 #include "history/view/history_view_translate_tracker.h"
 #include "history/view/history_view_read_metrics_tracker.h"
 #include "base/platform/base_platform_info.h"
@@ -3184,6 +3185,16 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				Element::Moused())
 		) != HistoryView::PointState::GroupPart);
 	const auto addSelectMessageAction = [&](not_null<HistoryItem*> item) {
+		// Plume: позвать Takt с этим сообщением — разослать участникам, переслать, ответить.
+		if (item->isRegular() && !item->history()->peer->isSelf()) {
+			const auto controller = _controller;
+			const auto peer = item->history()->peer;
+			const auto msgId = item->id;
+			const auto text = item->originalText().text;
+			_menu->addAction(u"Спросить Takt"_q, [=] {
+				TgLite::ShowAssistantForChat(controller, peer, msgId, text);
+			}, &st::menuIconBot);
+		}
 		if (item->canBeSelected() && !hasSelectRestriction()) {
 			const auto itemId = item->fullId();
 			_menu->addAction(tr::lng_context_select_msg(tr::now), [=] {
