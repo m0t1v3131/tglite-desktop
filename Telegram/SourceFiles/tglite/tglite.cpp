@@ -910,6 +910,8 @@ rpl::producer<bool> FocusValue() {
 	return FocusVariable().value();
 }
 
+static bool FocusBoxShown = false; // окно «Фокус-режим» открыто
+
 void SetFocus(not_null<Window::SessionController*> controller, bool enabled) {
 	auto &focus = Focus();
 	if (focus.on == enabled) {
@@ -926,15 +928,20 @@ void SetFocus(not_null<Window::SessionController*> controller, bool enabled) {
 	}
 	controller->showToast(enabled
 		? (focus.chats.empty()
-			? u"Фокус включён: для всех вы не в сети. Чаты, которые спрятать, — в «Фокус-режим»."_q
+			? u"Фокус включён: для всех вы не в сети. Выберите чаты, которые спрятать."_q
 			: u"Фокус включён: для всех вы не в сети, выбранные чаты спрятаны."_q)
 		: u"Фокус выключен: «Время захода» как было, чаты вернулись."_q);
+	if (enabled && focus.chats.empty() && !FocusBoxShown) {
+		ShowFocusBox(controller); // без выбранных чатов прятать нечего — сразу выбор
+	}
 }
 
 void ShowFocusBox(not_null<Window::SessionController*> controller) {
 	const auto session = &controller->session();
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(rpl::single(u"Фокус-режим"_q));
+		FocusBoxShown = true;
+		box->lifetime().add([] { FocusBoxShown = false; });
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
 			u"Для всех вы «не в сети» («Время захода» — «Никто», при выключении вернётся как было). "
