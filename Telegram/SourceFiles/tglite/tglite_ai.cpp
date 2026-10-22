@@ -2203,9 +2203,61 @@ Ui::AbstractButton *CreatePlumeSettingsButton(
 
 namespace {
 
+// Кнопка «Takt» внутри поля ввода, справа: не закрывает переписку.
+class FieldTaktButton final : public QWidget {
+public:
+	FieldTaktButton(QWidget *parent, Fn<void()> click, Fn<bool()> loading)
+	: QWidget(parent)
+	, _click(std::move(click))
+	, _loading(std::move(loading)) {
+		setMouseTracking(true);
+		setCursor(style::cur_pointer);
+		hide();
+	}
+
+	static int naturalWidth() {
+		return st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(18);
+	}
+	static int naturalHeight() {
+		return style::ConvertScale(26);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		const auto r = rect().marginsRemoved({ 1, 1, 1, 1 });
+		const auto radius = r.height() / 2.;
+		p.setPen(Qt::NoPen);
+		p.setBrush(_over ? st::lightButtonBgOver : st::lightButtonBg);
+		p.drawRoundedRect(r, radius, radius);
+		p.setFont(st::semiboldFont);
+		p.setPen(_loading() ? st::windowSubTextFg : st::windowActiveTextFg);
+		p.drawText(r, Qt::AlignCenter, u"Takt"_q);
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!_over) {
+			_over = true;
+			update();
+		}
+	}
+	void leaveEvent(QEvent *e) override {
+		_over = false;
+		update();
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && rect().contains(e->pos())) _click();
+	}
+
+private:
+	Fn<void()> _click;
+	Fn<bool()> _loading;
+	bool _over = false;
+};
+
 // Панель принадлежит полю: закрытие чата уничтожает обработчики и таймеры.
-// Рисуется цветами темы Telegram: пустое поле — маленькая «пилюля» справа,
-// варианты — карточка над полем, как всплывающие подсказки Telegram.
+// В личном чате справа в поле — кнопка «Takt»; по нажатию над полем
+// карточка с вариантами ответа (цвета темы Telegram). Сам Takt не всплывает.
 class ReplySuggestions final : public QWidget {
 public:
 	ReplySuggestions(
@@ -2217,8 +2269,10 @@ public:
 	, _controller(controller)
 	, _currentHistory(std::move(currentHistory)) {
 		setMouseTracking(true);
-		_debounce.setSingleShot(true);
-		QObject::connect(&_debounce, &QTimer::timeout, this, [=] { request(); });
+		_button = new FieldTaktButton(
+			field->parentWidget(),
+			[=] { buttonClicked(); },
+			[=] { return _loading; });
 		// Проверяем смену чата и расположение поля, не загружая историю и сеть.
 		_watch.setInterval(250);
 		QObject::connect(&_watch, &QTimer::timeout, this, [=] { updateContext(); });
@@ -2226,9 +2280,13 @@ public:
 		_field->changes() | rpl::on_next([=] {
 			if (_applying) return;
 			invalidate();
-			if (canSuggest() && !_field->getTextWithTags().text.trimmed().isEmpty()) _debounce.start(1600);
+			updateButtonTip();
 		}, _field->lifetime());
+		updateButtonTip();
 		hide();
+	}
+	~ReplySuggestions() {
+		if (_button) delete _button.data();
 	}
 
 protected:
@@ -2236,7 +2294,7 @@ protected:
 		auto p = QPainter(this);
 		PainterHighQualityEnabler hq(p);
 		const auto r = rect().marginsRemoved({ 1, 1, 1, 2 });
-		const auto radius = _answers.isEmpty() ? r.height() / 2. : style::ConvertScale(12) * 1.;
+		const auto radius = style::ConvertScale(12) * 1.;
 		// Мягкая тень и сама подложка.
 		p.setPen(Qt::NoPen);
 		p.setBrush(st::shadowFg);
@@ -2244,33 +2302,25 @@ protected:
 		p.setBrush(st::windowBg);
 		p.drawRoundedRect(r, radius, radius);
 
-		const auto pad = style::ConvertScale(12);
-		if (_answers.isEmpty()) {
-			auto left = pad;
-			const auto label = u"Takt"_q;
-			p.setFont(st::semiboldFont);
-			p.setPen(st::windowActiveTextFg);
-			p.drawText(QRect(left, r.y(), st::semiboldFont->width(label), r.height()), Qt::AlignVCenter, label);
-			left += st::semiboldFont->width(label) + style::ConvertScale(6);
-			p.setFont(st::normalFont);
-			p.setPen(_over == kRequest && !_loading ? st::windowFg : st::windowSubTextFg);
-			p.drawText(QRect(left, r.y(), width() - left, r.height()), Qt::AlignVCenter, pillText());
-			paintClose(p, closeRect());
-			return;
-		}
-
 		// Заголовок: «Takt предлагает» · «Ещё» · ×.
+		const auto pad = style::ConvertScale(12);
 		const auto header = headerRect();
 		p.setFont(st::semiboldFont);
 		p.setPen(st::windowActiveTextFg);
 		p.drawText(header.adjusted(pad, 0, 0, 0), Qt::AlignVCenter, u"Takt"_q);
 		const auto tw = st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(6);
+		const auto more = moreRect();
+		const auto status = header.adjusted(pad + tw, 0, 0, 0);
 		p.setFont(st::normalFont);
 		p.setPen(st::windowSubTextFg);
-		p.drawText(header.adjusted(pad + tw, 0, 0, 0), Qt::AlignVCenter, u"предлагает"_q);
-		const auto more = moreRect();
-		p.setPen(_over == kRequest ? st::windowFg : st::windowActiveTextFg);
-		p.drawText(more, Qt::AlignCenter, u"Ещё"_q);
+		p.drawText(
+			status.adjusted(0, 0, -(width() - more.x()), 0),
+			Qt::AlignVCenter,
+			st::normalFont->elided(statusText(), status.width() - (width() - more.x())));
+		if (!_loading) {
+			p.setPen(_over == kRequest ? st::windowFg : st::windowActiveTextFg);
+			p.drawText(more, Qt::AlignCenter, moreText());
+		}
 		paintClose(p, closeRect());
 
 		for (auto i = 0; i < _answers.size(); ++i) {
@@ -2291,11 +2341,12 @@ protected:
 		const auto over = hit(e->pos());
 		if (over == _over) return;
 		_over = over;
-		setCursor((over == kNone || (over == kRequest && _loading)) ? style::cur_default : style::cur_pointer);
+		setCursor(over == kNone ? style::cur_default : style::cur_pointer);
 		setToolTip(over >= 0 && over < _answers.size()
 			? _answers[over]
-			: over == kClose ? u"Скрыть до следующего чата"_q
-			: _error);
+			: over == kClose ? u"Скрыть"_q
+			: (over == kNone && !_error.isEmpty()) ? _error
+			: QString());
 		update();
 	}
 
@@ -2308,12 +2359,10 @@ protected:
 		if (e->button() != Qt::LeftButton) return;
 		const auto action = hit(e->pos());
 		if (action == kClose) {
-			_pausedHistory = _currentHistory();
-			++_generation;
-			_debounce.stop();
-			hide();
+			invalidate();
+			_field->setFocusFast();
 		} else if (action == kRequest) {
-			if (!_loading) request();
+			request();
 		} else if (action >= 0) {
 			apply(action);
 		}
@@ -2324,14 +2373,15 @@ private:
 	static constexpr auto kRequest = 10;
 	static constexpr auto kClose = 11;
 
-	QString pillText() const {
+	QString statusText() const {
 		return _loading
 			? u"подбирает ответы…"_q
 			: !_error.isEmpty()
-			? u"не получилось · повторить"_q
-			: _text.trimmed().isEmpty()
-			? u"подсказать ответ"_q
-			: u"варианты ответа"_q;
+			? _error
+			: u"предлагает"_q;
+	}
+	QString moreText() const {
+		return _answers.isEmpty() ? u"Повторить"_q : u"Ещё"_q;
 	}
 
 	int headerHeight() const { return style::ConvertScale(32); }
@@ -2343,11 +2393,10 @@ private:
 	}
 	QRect closeRect() const {
 		const auto size = style::ConvertScale(28);
-		const auto h = _answers.isEmpty() ? height() : headerHeight();
-		return QRect(width() - size - style::ConvertScale(4), (h - size) / 2, size, size);
+		return QRect(width() - size - style::ConvertScale(4), (headerHeight() - size) / 2, size, size);
 	}
 	QRect moreRect() const {
-		const auto w = st::normalFont->width(u"Ещё"_q) + style::ConvertScale(16);
+		const auto w = _loading ? 0 : st::normalFont->width(moreText()) + style::ConvertScale(16);
 		return QRect(closeRect().x() - w, 0, w, headerHeight());
 	}
 	QRect answerRect(int i) const {
@@ -2357,8 +2406,7 @@ private:
 
 	int hit(QPoint point) const {
 		if (closeRect().contains(point)) return kClose;
-		if (_answers.isEmpty()) return rect().contains(point) ? kRequest : kNone;
-		if (moreRect().contains(point)) return kRequest;
+		if (!_loading && moreRect().contains(point)) return kRequest;
 		for (auto i = 0; i < _answers.size(); ++i) {
 			if (answerRect(i).contains(point)) return i;
 		}
@@ -2376,6 +2424,24 @@ private:
 		p.drawLine(c + QPointF(-d, d), c + QPointF(d, -d));
 	}
 
+	void buttonClicked() {
+		if (_loading) return;
+		if (isVisible()) {
+			// Повторное нажатие прячет карточку.
+			invalidate();
+		} else {
+			request();
+		}
+		_field->setFocusFast();
+	}
+
+	void updateButtonTip() {
+		if (!_button) return;
+		_button->setToolTip(_field->getTextWithTags().text.trimmed().isEmpty()
+			? u"Takt подскажет ответ"_q
+			: u"Takt предложит варианты вашего ответа"_q);
+	}
+
 	void apply(int i) {
 		if (!isCurrent(_generation) || i >= _answers.size()) return;
 		const auto answer = _answers[i];
@@ -2386,17 +2452,15 @@ private:
 		_applying = false;
 		_text = answer;
 		_answers.clear();
-		_debounce.stop();
 		hide();
+		updateButtonTip();
 	}
 
-	bool canSuggest() const {
+	bool canShow() const {
 		const auto history = _currentHistory();
 		return history && history->peer->isUser()
 			&& !history->peer->asUser()->isBot() && !history->peer->isSelf()
-			&& history != _pausedHistory && _field->isVisible() && _field->isEnabled()
-			&& (_field->rawTextEdit()->hasFocus() || underMouse()
-				|| isAncestorOf(QApplication::focusWidget()))
+			&& _field->isVisible() && _field->isEnabled()
 			&& !_field->getTextWithTags().text.trimmed().startsWith('@')
 			&& _field->getTextWithTags().text.size() <= 4000;
 	}
@@ -2408,7 +2472,6 @@ private:
 
 	void invalidate() {
 		++_generation;
-		_debounce.stop();
 		hide();
 		_answers.clear();
 		_error = QString();
@@ -2416,47 +2479,63 @@ private:
 		_over = kNone;
 		_history = _currentHistory();
 		_text = _field->getTextWithTags().text;
+		if (_button) _button->update();
+	}
+
+	void setFieldMargin(int right) {
+		if (_fieldMargin == right) return;
+		_fieldMargin = right;
+		_field->setAdditionalMargins({ 0, 0, right, 0 });
 	}
 
 	void updateContext() {
 		if (_history != _currentHistory()) {
-			_pausedHistory = nullptr;
 			invalidate();
 		}
-		if (!canSuggest()) {
+		if (!canShow()) {
+			if (_button) _button->hide();
+			setFieldMargin(0);
 			hide();
 			return;
 		}
-		if (!isVisible() && _text.trimmed().isEmpty()) show();
-		if (!isVisible()) return;
 		const auto origin = _field->mapTo(parentWidget(), QPoint(0, 0));
-		const auto space = style::ConvertScale(6);
-		auto size = QSize();
-		if (_answers.isEmpty()) {
-			const auto label = st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(6)
-				+ st::normalFont->width(pillText());
-			size = QSize(style::ConvertScale(12) + label + style::ConvertScale(36), style::ConvertScale(32));
-			size.setWidth(std::min(size.width(), std::max(1, _field->width())));
-			move(origin.x() + _field->width() - size.width(), origin.y() - size.height() - space);
-		} else {
-			size = QSize(
-				std::max(1, _field->width()),
-				headerHeight() + _answers.size() * (rowHeight() + gap()) + style::ConvertScale(6));
-			move(origin.x(), origin.y() - size.height() - space);
+
+		// Кнопка — у правого края поля, на уровне последней строки.
+		if (_button) {
+			if (_field->getTextWithTags().text.isEmpty()) _singleHeight = _field->height();
+			const auto bw = FieldTaktButton::naturalWidth();
+			const auto bh = FieldTaktButton::naturalHeight();
+			const auto line = _singleHeight > 0
+				? std::min(_singleHeight, _field->height())
+				: _field->height();
+			const auto x = origin.x() + _field->width() - bw - style::ConvertScale(2);
+			const auto y = origin.y() + _field->height() - line + (line - bh) / 2;
+			setFieldMargin(bw + style::ConvertScale(6));
+			if (_button->geometry() != QRect(x, y, bw, bh)) _button->setGeometry(x, y, bw, bh);
+			if (!_button->isVisible()) _button->show();
+			_button->raise();
 		}
+
+		if (!isVisible()) return;
+		const auto space = style::ConvertScale(6);
+		const auto size = QSize(
+			std::max(1, _field->width()),
+			headerHeight() + _answers.size() * (rowHeight() + gap()) + style::ConvertScale(6));
+		move(origin.x(), origin.y() - size.height() - space);
 		if (this->size() != size) resize(size);
 		raise();
 		update();
 	}
 
 	void request() {
-		if (!canSuggest()) return;
+		if (!canShow()) return;
 		invalidate();
 		const auto generation = _generation;
 		const auto guard = QPointer<ReplySuggestions>(this);
 		_loading = true;
 		show();
 		updateContext();
+		if (_button) _button->update();
 		AssistantFor(_controller)->suggestReply(_history, _text,
 			[=] { return guard && guard->isCurrent(generation); },
 			[=](QStringList answers, QString error) {
@@ -2467,6 +2546,7 @@ private:
 					? (error.isEmpty() ? u"Не получилось подобрать ответ"_q : error)
 					: QString();
 				_over = kNone;
+				if (_button) _button->update();
 				show();
 				updateContext();
 			});
@@ -2475,19 +2555,19 @@ private:
 	not_null<Ui::InputField*> _field;
 	not_null<Window::SessionController*> _controller;
 	Fn<History*()> _currentHistory;
+	QPointer<FieldTaktButton> _button;
 	History *_history = nullptr;
-	History *_pausedHistory = nullptr;
 	QStringList _answers;
 	QString _text;
 	QString _error;
-	QTimer _debounce;
 	QTimer _watch;
 	int _generation = 0;
 	int _over = kNone;
+	int _fieldMargin = -1;
+	int _singleHeight = 0;
 	bool _loading = false;
 	bool _applying = false;
 };
-
 } // namespace
 
 void InstallReplySuggestions(
