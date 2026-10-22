@@ -685,6 +685,9 @@ Widget::Widget(
 		_plume = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreateTaktButton(_searchControls, controller));
 		_plume->show();
+		_plumeSettings = object_ptr<Ui::AbstractButton>::fromRaw(
+			TgLite::CreatePlumeSettingsButton(_searchControls, controller));
+		_plumeSettings->show();
 	}
 	const auto lockUnlock = _lockUnlock->entity();
 	lockUnlock->setAccessibleName(tr::lng_shortcuts_lock(tr::now));
@@ -4563,7 +4566,8 @@ void Widget::updateControlsGeometry() {
 		+ st::dialogsFilterPadding.x();
 	const auto filterRight = st::dialogsFilterSkip
 		+ st::dialogsFilterPadding.x();
-	const auto plumeWidth = _plume ? _plume->width() : 0;
+	const auto plumeWidth = (_plume ? _plume->width() : 0)
+		+ (_plumeSettings ? _plumeSettings->width() : 0);
 	const auto filterWidth = std::max(ratiow, smallw)
 		- filterLeft
 		- filterRight
@@ -4605,9 +4609,18 @@ void Widget::updateControlsGeometry() {
 		searchLeft,
 		st::dialogsFilterPadding.y());
 
+	if (_plumeSettings) {
+		_plumeSettings->moveToLeft(
+			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2,
+			st::dialogsFilterPadding.y());
+		_plumeSettings->setVisible(narrowRatio == 0.);
+	}
 	if (_plume) {
 		_plume->moveToLeft(
-			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2,
+			filterLeft
+				+ filterWidth
+				+ st::dialogsFilterPadding.x() / 2
+				+ (_plumeSettings ? _plumeSettings->width() : 0),
 			st::dialogsFilterPadding.y());
 		_plume->setVisible(narrowRatio == 0.);
 	}

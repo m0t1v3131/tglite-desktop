@@ -345,6 +345,7 @@ private:
 	object_ptr<Ui::CrossButton> _cancelSearch;
 	object_ptr<Ui::FadeWrapScaled<Ui::IconButton>> _lockUnlock;
 	object_ptr<Ui::AbstractButton> _plume = { nullptr }; // Plume: кнопка «Takt»
+	object_ptr<Ui::AbstractButton> _plumeSettings = { nullptr }; // Plume: шестерёнка «Настройки Плюма»
 
 	std::unique_ptr<Ui::MoreChatsBar> _moreChatsBar;
 

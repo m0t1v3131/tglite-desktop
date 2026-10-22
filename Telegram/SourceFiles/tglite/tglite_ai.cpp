@@ -10,6 +10,7 @@ Licensed under GNU GPL v. 3.
 Рассылка — с теми же ограничениями: ≤25 адресатов за раз, ≤60 в сутки, пауза 25–60 с, всегда подтверждение.
 */
 #include "tglite/tglite_ai.h"
+#include "tglite/tglite.h"
 
 #include "apiwrap.h"
 #include "core/application.h"
@@ -45,6 +46,7 @@ Licensed under GNU GPL v. 3.
 #include "styles/style_dialogs_widget.h"
 #include "styles/style_widgets.h"
 #include "styles/style_layers.h"
+#include "styles/style_menu_icons.h"
 
 #include <QtCore/QDate>
 #include <QtCore/QPointer>
@@ -2092,6 +2094,33 @@ private:
 
 };
 
+class PlumeSettingsButton final : public Ui::AbstractButton {
+public:
+	explicit PlumeSettingsButton(QWidget *parent) : AbstractButton(parent) {
+		setCursor(style::cur_pointer);
+		resize(st::dialogsLock.height, st::dialogsLock.height);
+		setToolTip(u"Настройки Плюма"_q);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		if (isOver()) {
+			PainterHighQualityEnabler hq(p);
+			const auto h = std::min(height(), style::ConvertScale(30));
+			p.setPen(Qt::NoPen);
+			p.setBrush(st::windowBgOver);
+			p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
+		}
+		st::menuIconSettings.paintInCenter(p, rect());
+	}
+
+	void onStateChanged(State was, StateChangeSource source) override {
+		update();
+	}
+
+};
+
 void InstallHotkey() {
 	static auto installed = false;
 	if (installed) {
@@ -2157,6 +2186,17 @@ Ui::AbstractButton *CreateTaktButton(
 			ShowAssistant(controller);
 		});
 	}
+	return result;
+}
+
+Ui::AbstractButton *CreatePlumeSettingsButton(
+		not_null<QWidget*> parent,
+		not_null<Window::SessionController*> controller) {
+	const auto result = new PlumeSettingsButton(parent);
+	result->setAccessibleName(u"Настройки Плюма"_q);
+	result->setClickedCallback([=] {
+		ShowSettingsBox(controller);
+	});
 	return result;
 }
 

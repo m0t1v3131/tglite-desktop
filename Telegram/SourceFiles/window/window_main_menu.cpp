@@ -772,6 +772,12 @@ void MainMenu::setupMenu() {
 		});
 	}
 	addAction(
+		rpl::single(u"Настройки Плюма"_q),
+		{ &st::menuIconExperimental }
+	)->setClickedCallback([=] {
+		TgLite::ShowSettingsBox(controller);
+	});
+	addAction(
 		tr::lng_menu_settings(),
 		{ &st::menuIconSettings }
 	)->setClickedCallback([=] {
@@ -782,12 +788,6 @@ void MainMenu::setupMenu() {
 		{ &st::menuIconBotCommands }
 	)->setClickedCallback([=] {
 		TgLite::ShowAssistant(controller);
-	});
-	addAction(
-		rpl::single(u"Настройки Плюма"_q),
-		{ &st::menuIconExperimental }
-	)->setClickedCallback([=] {
-		TgLite::ShowSettingsBox(controller);
 	});
 	addAction(
 		rpl::single(u"Фокус-режим"_q),

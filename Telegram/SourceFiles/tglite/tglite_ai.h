@@ -45,6 +45,11 @@ void ShowAssistantForChat(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
 
+// Круглая кнопка-шестерёнка «Настройки Плюма» рядом с «Takt»: окно настроек в одно нажатие.
+[[nodiscard]] Ui::AbstractButton *CreatePlumeSettingsButton(
+	not_null<QWidget*> parent,
+	not_null<Window::SessionController*> controller);
+
 // Раз в 30 с забирает задания других проектов (plume.amdiveev.ru/api/cmd-pending) и выполняет их помощником.
 void StartCommandPolling();
 
