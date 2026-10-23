@@ -54,6 +54,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "main/main_domain.h"
+#include "tglite/tglite.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "window/window_session_controller.h"
 #include "window/window_controller.h"
@@ -228,6 +229,8 @@ private:
 	int _outerIndex = 0;
 
 	Ui::SlideWrap<Ui::SettingsButton> *_addAccount = nullptr;
+	Ui::SlideWrap<Ui::SettingsButton> *_hiddenAccounts = nullptr; // Плюм
+	rpl::variable<int> _hiddenCount;
 	base::flat_map<
 		not_null<::Main::Account*>,
 		base::unique_qptr<Ui::SettingsButton>> _watched;
@@ -920,6 +923,14 @@ void SetupAccountsWrap(
 				addAction);
 		}
 
+		// Плюм: спрятать аккаунт из списка, чтобы не маячил.
+		addAction(u"Скрыть аккаунт"_q, [=] {
+			TgLite::SetAccountHidden(&session->account(), true);
+			window->showToast(isActive
+				? u"Аккаунт скрыт: пропадёт из списка, когда переключитесь на другой. Найти — «Скрытые аккаунты»."_q
+				: u"Аккаунт скрыт. Найти — «Скрытые аккаунты» под списком аккаунтов."_q);
+		}, &st::menuIconStealth);
+
 		if (!isActive) {
 			auto logoutCallback = [=] {
 				const auto callback = [=](Fn<void()> &&close) {
@@ -967,6 +978,31 @@ Ui::RpWidget *AccountsList::addAccountButton() const {
 
 void AccountsList::setup() {
 	_addAccount = setupAdd();
+
+	// Плюм: скрытые аккаунты — одной строкой под списком.
+	_hiddenAccounts = _outer->add(
+		object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
+			_outer.get(),
+			object_ptr<Ui::SettingsButton>(
+				_outer.get(),
+				_hiddenCount.value() | rpl::map([](int count) {
+					return u"Скрытые аккаунты · "_q + QString::number(count);
+				}),
+				st::mainMenuAddAccountButton)))->setDuration(0);
+	_hiddenAccounts->toggleOn(_hiddenCount.value() | rpl::map([](int count) {
+		return count > 0;
+	}));
+	_hiddenAccounts->entity()->setClickedCallback([=] {
+		_closeRequests.fire({});
+		TgLite::ShowHiddenAccountsBox(_controller);
+	});
+	TgLite::HiddenAccountsChanges(
+	) | rpl::on_next([=] {
+		for (auto i = _watched.begin(); i != _watched.end(); i++) {
+			i->second = nullptr;
+		}
+		rebuild();
+	}, _outer->lifetime());
 
 	rpl::single(rpl::empty) | rpl::then(
 		Core::App().domain().accountsChanges()
@@ -1113,12 +1149,18 @@ void AccountsList::rebuild() {
 
 	const auto premiumLimit = _controller->session().domain().maxAccounts();
 	const auto list = _controller->session().domain().orderedAccounts();
+	auto hidden = 0;
 	for (const auto &account : list) {
 		auto i = _watched.find(account);
 		Assert(i != _watched.end());
 
 		auto &button = i->second;
-		if (!account->sessionExists() || list.size() == 1) {
+		const auto hide = TgLite::AccountHidden(account) // Плюм
+			&& (account != &_controller->session().account());
+		if (hide) {
+			++hidden;
+		}
+		if (!account->sessionExists() || list.size() == 1 || hide) {
 			button = nullptr;
 		} else if (!button) {
 			const auto nextIsLocked = (inner->count() >= premiumLimit);
@@ -1161,6 +1203,7 @@ void AccountsList::rebuild() {
 		}
 	}
 	inner->resizeToWidth(_outer->width());
+	_hiddenCount = hidden;
 
 	const auto count = int(list.size());
 

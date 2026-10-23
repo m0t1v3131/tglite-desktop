@@ -1023,7 +1023,8 @@ OthersUnreadState OtherAccountsUnreadStateCurrent(
 	auto counter = 0;
 	auto allMuted = true;
 	for (const auto &[index, account] : domain.accounts()) {
-		if (account.get() == current) {
+		if (account.get() == current
+			|| TgLite::AccountHidden(account.get())) { // Плюм
 			continue;
 		} else if (const auto session = account->maybeSession()) {
 			counter += session->data().unreadWithMentionsBadge();

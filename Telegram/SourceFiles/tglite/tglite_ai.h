@@ -53,4 +53,8 @@ void ShowAssistantForChat(
 // Раз в 30 с забирает задания других проектов (plume.amdiveev.ru/api/cmd-pending) и выполняет их помощником.
 void StartCommandPolling();
 
+// Менеджер аккаунтов (plume.amdiveev.ru/accounts): какие аккаунты открыты в этом Плюме —
+// имя, @имя, телефон, «скрыт». Сессии никуда не уходят. Сам — при запуске и раз в 30 минут.
+void ReportAccounts();
+
 } // namespace TgLite

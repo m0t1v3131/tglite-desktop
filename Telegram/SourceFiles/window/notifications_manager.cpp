@@ -319,6 +319,7 @@ System::SkipState System::skipNotification(
 	if (!thread
 		|| TgLite::MuteAll() // Плюм: все уведомления выключены
 		|| TgLite::FocusHidden(item->history()) // Плюм: фокус-режим
+		|| TgLite::AccountHidden(&item->history()->session().account()) // Плюм: скрытый аккаунт
 		|| !thread->currentNotification()
 		|| (messageType && item->skipNotification())
 		|| (type == Data::ItemNotificationType::Reaction

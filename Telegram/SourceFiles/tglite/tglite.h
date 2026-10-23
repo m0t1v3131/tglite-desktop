@@ -8,6 +8,7 @@ Licensed under GNU GPL v. 3.
 class History;
 
 namespace Main {
+class Account;
 class Session;
 } // namespace Main
 
@@ -18,7 +19,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102312;
+inline constexpr auto kBuild = 26102313;
 
 void Start();
 void Stop();
@@ -44,5 +45,12 @@ void ShowFocusBox(not_null<Window::SessionController*> controller);
 [[nodiscard]] bool GhostActive();
 [[nodiscard]] rpl::producer<bool> GhostValue();
 void SetGhost(not_null<Window::SessionController*> controller, bool enabled);
+
+// Скрытые аккаунты (до 30 аккаунтов в Плюме): не видны в списке аккаунтов, кроме открытого,
+// без уведомлений и счётчика непрочитанных. tglite.json → hiddenAccounts (id пользователей).
+[[nodiscard]] bool AccountHidden(not_null<Main::Account*> account);
+[[nodiscard]] rpl::producer<> HiddenAccountsChanges();
+void SetAccountHidden(not_null<Main::Account*> account, bool hidden);
+void ShowHiddenAccountsBox(not_null<Window::SessionController*> controller);
 
 } // namespace TgLite

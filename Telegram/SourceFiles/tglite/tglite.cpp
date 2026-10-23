@@ -22,6 +22,8 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "data/data_thread.h"
 #include "data/data_user.h"
 #include "history/history.h"
+#include "main/main_account.h"
+#include "main/main_domain.h"
 #include "main/main_session.h"
 #include "core/application.h"
 #include "core/core_settings.h"
@@ -44,6 +46,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "window/window_session_controller.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
+#include "styles/style_settings.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
@@ -1135,6 +1138,110 @@ void CheckUpdates(bool manual) {
 	});
 }
 
+namespace {
+
+base::flat_set<uint64> &HiddenAccountIds() {
+	static auto result = [] {
+		auto ids = base::flat_set<uint64>();
+		for (const auto &v : ReadState().value(u"hiddenAccounts"_q).toArray()) {
+			if (const auto id = v.toString().toULongLong()) {
+				ids.emplace(id);
+			}
+		}
+		return ids;
+	}();
+	return result;
+}
+
+rpl::event_stream<> &HiddenAccountsStream() {
+	static auto result = rpl::event_stream<>();
+	return result;
+}
+
+QString AccountTitle(not_null<Main::Account*> account) {
+	const auto user = account->session().user();
+	const auto phone = user->phone();
+	return phone.isEmpty()
+		? user->name()
+		: (user->name() + u" (+"_q + phone + u")"_q);
+}
+
+} // namespace
+
+bool AccountHidden(not_null<Main::Account*> account) {
+	const auto &ids = HiddenAccountIds();
+	return !ids.empty()
+		&& account->sessionExists()
+		&& ids.contains(account->session().userId().bare);
+}
+
+rpl::producer<> HiddenAccountsChanges() {
+	return HiddenAccountsStream().events();
+}
+
+void SetAccountHidden(not_null<Main::Account*> account, bool hidden) {
+	if (!account->sessionExists() || AccountHidden(account) == hidden) {
+		return;
+	}
+	auto &ids = HiddenAccountIds();
+	const auto id = account->session().userId().bare;
+	if (hidden) {
+		ids.emplace(id);
+	} else {
+		ids.remove(id);
+	}
+	auto list = QJsonArray();
+	for (const auto hiddenId : ids) {
+		list.push_back(QString::number(hiddenId));
+	}
+	SetState(u"hiddenAccounts"_q, list);
+	HiddenAccountsStream().fire({});
+	Core::App().domain().notifyUnreadBadgeChanged();
+	ReportAccounts();
+}
+
+void ShowHiddenAccountsBox(not_null<Window::SessionController*> controller) {
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Скрытые аккаунты"_q));
+		auto count = 0;
+		for (const auto &account : Core::App().domain().orderedAccounts()) {
+			if (!AccountHidden(account)) {
+				continue;
+			}
+			++count;
+			const auto active = (account == &controller->session().account());
+			const auto button = box->addRow(
+				object_ptr<Ui::SettingsButton>(
+					box,
+					rpl::single(AccountTitle(account)
+						+ (active ? u" — открыт"_q : QString())),
+					st::settingsButtonNoIcon),
+				style::margins());
+			button->setClickedCallback([=] {
+				box->closeBox();
+				if (!active) {
+					base::call_delayed(200, account, [=] {
+						Core::App().domain().maybeActivate(account);
+					});
+				}
+			});
+		}
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			count
+				? u"Нажмите — откроется этот аккаунт. Скрытые аккаунты не видны "
+					u"в списке аккаунтов и не присылают уведомлений. Вернуть в список — "
+					u"«Настройки Плюма» → «Аккаунты»."_q
+				: u"Скрытых аккаунтов нет."_q,
+			st::boxDividerLabel));
+		box->addButton(rpl::single(u"Настройки Плюма"_q), [=] {
+			box->closeBox();
+			ShowSettingsBox(controller);
+		});
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+	}));
+}
+
 void Start() {
 	if (VpnEnabled()) {
 		if (!StartXray()) {
@@ -1232,6 +1339,27 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				: u"Фокус-режим: выключен — настроить"_q))->setClickedCallback([=] {
 			ShowFocusBox(controller);
 		});
+
+		section(u"Аккаунты"_q);
+		for (const auto &account : Core::App().domain().orderedAccounts()) {
+			if (!account->sessionExists()) {
+				continue;
+			}
+			const auto hide = box->addRow(object_ptr<Ui::Checkbox>(
+				box,
+				u"Скрыть: "_q + AccountTitle(account),
+				AccountHidden(account)));
+			hide->checkedChanges() | rpl::on_next([=](bool checked) {
+				SetAccountHidden(account, checked);
+			}, hide->lifetime());
+		}
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"В Плюме можно до 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». "
+			u"Скрытые не видны в списке аккаунтов (кроме открытого), не присылают "
+			u"уведомлений и не добавляют непрочитанных; открыть — «Скрытые аккаунты» "
+			u"под списком. Все ваши аккаунты со всех устройств — plume.amdiveev.ru/accounts."_q,
+			st::boxDividerLabel));
 
 		section(u"VPN StealthSurf"_q);
 		box->addRow(object_ptr<Ui::FlatLabel>(

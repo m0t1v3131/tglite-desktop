@@ -36,8 +36,9 @@ public:
 		std::unique_ptr<Account> account;
 	};
 
-	static constexpr auto kMaxAccounts = 3;
-	static constexpr auto kPremiumMaxAccounts = 6;
+	// Плюм: до 30 аккаунтов без Premium (у Telegram — 3, с Premium — 6).
+	static constexpr auto kMaxAccounts = 30;
+	static constexpr auto kPremiumMaxAccounts = 30;
 
 	explicit Domain(const QString &dataName);
 	~Domain();

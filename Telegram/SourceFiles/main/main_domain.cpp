@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "main/main_domain.h"
 
+#include "tglite/tglite.h"
+
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/shortcuts.h"
@@ -303,7 +305,9 @@ void Domain::updateUnreadBadge() {
 	_unreadBadge = 0;
 	_unreadBadgeMuted = true;
 	for (const auto &[index, account] : _accounts) {
-		if (const auto session = account->maybeSession()) {
+		if (TgLite::AccountHidden(account.get())) {
+			continue; // Плюм: скрытый аккаунт не добавляет непрочитанных
+		} else if (const auto session = account->maybeSession()) {
 			const auto data = &session->data();
 			_unreadBadge += data->unreadBadge();
 			if (!data->unreadBadgeMuted()) {
