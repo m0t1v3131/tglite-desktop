@@ -2554,6 +2554,11 @@ void History::setFolderPointer(Data::Folder *folder) {
 	if (folder) {
 		folder->registerOne(this);
 	}
+	if (wasKnown
+		&& TgLite::HideArchiveJunk()
+		&& inChatList() != shouldBeInChatList()) {
+		updateChatListExistence(); // Плюм: канал ушёл в архив или вернулся из него
+	}
 	session().changes().historyUpdated(this, UpdateFlag::Folder);
 }
 
@@ -3466,6 +3471,8 @@ bool History::trackUnreadMessages() const {
 bool History::shouldBeInChatList() const {
 	if (TgLite::FocusHidden(this)) {
 		return false; // Плюм: фокус-режим прячет выбранные чаты
+	} else if (TgLite::ArchiveJunkHidden(this)) {
+		return false; // Плюм: в архиве без чужих каналов и открытых групп
 	} else if (peer->migrateTo() || !folderKnown()) {
 		return false;
 	} else if (const auto community = peer->asChannel()

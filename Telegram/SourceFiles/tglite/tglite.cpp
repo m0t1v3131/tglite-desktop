@@ -16,6 +16,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "api/api_user_privacy.h"
 #include "apiwrap.h"
 #include "boxes/peer_list_controllers.h"
+#include "data/data_channel.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
 #include "data/data_thread.h"
@@ -881,6 +882,46 @@ bool HideRecentSearch() {
 		|| state.value(u"hideRecentSearch"_q).toBool();
 }
 
+bool &HideArchiveJunkFlag() {
+	static auto result = [] {
+		const auto state = ReadState();
+		return !state.contains(u"hideArchiveChannels"_q)
+			|| state.value(u"hideArchiveChannels"_q).toBool();
+	}();
+	return result;
+}
+
+bool HideArchiveJunk() {
+	return HideArchiveJunkFlag();
+}
+
+// Канал или открытая группа в архиве, где вы не создатель и не админ.
+bool ArchiveJunkHidden(not_null<const History*> history) {
+	if (!HideArchiveJunkFlag() || !history->folder()) {
+		return false;
+	}
+	const auto channel = history->peer->asChannel();
+	return channel
+		&& !channel->amCreator()
+		&& !channel->hasAdminRights()
+		&& (channel->isBroadcast() || channel->isPublic());
+}
+
+void SetHideArchiveJunk(not_null<Main::Session*> session, bool enabled) {
+	if (HideArchiveJunkFlag() == enabled) {
+		return;
+	}
+	HideArchiveJunkFlag() = enabled;
+	SetState(u"hideArchiveChannels"_q, enabled);
+	const auto refresh = [=](auto peer) {
+		if (const auto history = session->data().historyLoaded(peer->id)) {
+			history->updateChatListExistence();
+		}
+	};
+	session->data().enumerateGroups(refresh);
+	session->data().enumerateBroadcasts(refresh);
+}
+
 bool MuteAll() {
 	return MuteAllVariable().current();
 }
@@ -1254,6 +1295,13 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		recent->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"hideRecentSearch"_q, checked);
 		}, recent->lifetime());
+		const auto junk = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Скрыть каналы и открытые группы в архиве"_q,
+			HideArchiveJunk()));
+		junk->checkedChanges() | rpl::on_next([=](bool checked) {
+			SetHideArchiveJunk(&controller->session(), checked);
+		}, junk->lifetime());
 		section(u"Обновления"_q);
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
