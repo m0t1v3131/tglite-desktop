@@ -1018,8 +1018,8 @@ void Updates::updateOnline(crl::time lastNonIdleTime, bool gotOtherOffline) {
 			Assert(updateIn >= 0);
 		}
 	}
-	if (TgLite::FocusActive()) {
-		isOnline = false; // Плюм: в фокус-режиме всегда «не в сети»
+	if (TgLite::FocusActive() || TgLite::GhostActive()) {
+		isOnline = false; // Плюм: в фокус-режиме и невидимке всегда «не в сети»
 	}
 	auto ms = crl::now();
 	if (isOnline != _lastWasOnline

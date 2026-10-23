@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "data/data_peer_values.h"
 #include "apiwrap.h"
+#include "tglite/tglite.h"
 
 namespace Api {
 namespace {
@@ -109,7 +110,7 @@ bool SendProgressManager::updated(const Key &key, bool doing) {
 }
 
 void SendProgressManager::send(const Key &key, int progress) {
-	if (skipRequest(key)) {
+	if (TgLite::GhostActive() || skipRequest(key)) { // Плюм: невидимка — без «печатает…»
 		return;
 	}
 	using Type = SendProgressType;

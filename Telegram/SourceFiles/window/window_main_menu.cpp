@@ -801,6 +801,17 @@ void MainMenu::setupMenu() {
 		TgLite::SetFocus(controller, on);
 	}, _menu->lifetime());
 	addAction(
+		rpl::single(u"Невидимка"_q),
+		{ &st::menuIconStealth }
+	)->toggleOn(
+		TgLite::GhostValue()
+	)->toggledChanges(
+	) | rpl::filter([](bool on) {
+		return (on != TgLite::GhostActive());
+	}) | rpl::on_next([=](bool on) {
+		TgLite::SetGhost(controller, on);
+	}, _menu->lifetime());
+	addAction(
 		rpl::single(u"Выключить все уведомления"_q),
 		{ &st::menuIconMute }
 	)->toggleOn(

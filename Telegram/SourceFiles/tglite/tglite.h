@@ -14,7 +14,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102215;
+inline constexpr auto kBuild = 26102310;
 
 void Start();
 void Stop();
@@ -33,5 +33,8 @@ void SetMuteAll(not_null<Window::SessionController*> controller, bool enabled);
 [[nodiscard]] rpl::producer<bool> FocusValue();
 void SetFocus(not_null<Window::SessionController*> controller, bool enabled);
 void ShowFocusBox(not_null<Window::SessionController*> controller);
+[[nodiscard]] bool GhostActive();
+[[nodiscard]] rpl::producer<bool> GhostValue();
+void SetGhost(not_null<Window::SessionController*> controller, bool enabled);
 
 } // namespace TgLite

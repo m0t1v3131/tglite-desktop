@@ -762,6 +762,14 @@ rpl::variable<bool> &FocusVariable() {
 	return result;
 }
 
+// Невидимка — как LiteFocus.isGhost на Android: для всех «не в сети» и без «печатает…», чаты не прячутся.
+// tglite.json: ghostMode. «Время захода» общее с фокусом (focusPrivacy<id>): «Никто», пока включён любой из двух.
+rpl::variable<bool> &GhostVariable() {
+	static auto result = rpl::variable<bool>(
+		ReadState().value(u"ghostMode"_q).toBool());
+	return result;
+}
+
 void SaveFocusChats() {
 	auto list = QJsonArray();
 	for (const auto id : Focus().chats) {
@@ -910,6 +918,30 @@ rpl::producer<bool> FocusValue() {
 	return FocusVariable().value();
 }
 
+bool GhostActive() {
+	return GhostVariable().current();
+}
+
+rpl::producer<bool> GhostValue() {
+	return GhostVariable().value();
+}
+
+void SetGhost(not_null<Window::SessionController*> controller, bool enabled) {
+	if (GhostActive() == enabled) {
+		return;
+	}
+	SetState(u"ghostMode"_q, enabled);
+	GhostVariable() = enabled;
+	const auto session = &controller->session();
+	ApplyFocusPrivacy(session, enabled || FocusActive());
+	session->api().updates().updateOnline();
+	controller->showToast(enabled
+		? u"Невидимка включена: для всех вы «не в сети», без «печатает…»."_q
+		: FocusActive()
+		? u"Невидимка выключена. Фокус ещё включён — вы по-прежнему «не в сети»."_q
+		: u"Невидимка выключена: «Время захода» как было."_q);
+}
+
 static bool FocusBoxShown = false; // окно «Фокус-режим» открыто
 
 void SetFocus(not_null<Window::SessionController*> controller, bool enabled) {
@@ -921,7 +953,7 @@ void SetFocus(not_null<Window::SessionController*> controller, bool enabled) {
 	SetState(u"focusMode"_q, enabled);
 	FocusVariable() = enabled;
 	const auto session = &controller->session();
-	ApplyFocusPrivacy(session, enabled);
+	ApplyFocusPrivacy(session, enabled || GhostActive());
 	session->api().updates().updateOnline();
 	for (const auto id : focus.chats) {
 		RefreshFocusChat(session, id);
@@ -930,6 +962,8 @@ void SetFocus(not_null<Window::SessionController*> controller, bool enabled) {
 		? (focus.chats.empty()
 			? u"Фокус включён: для всех вы не в сети. Выберите чаты, которые спрятать."_q
 			: u"Фокус включён: для всех вы не в сети, выбранные чаты спрятаны."_q)
+		: GhostActive()
+		? u"Фокус выключен: чаты вернулись. Невидимка ещё включена."_q
 		: u"Фокус выключен: «Время захода» как было, чаты вернулись."_q);
 	if (enabled && focus.chats.empty() && !FocusBoxShown) {
 		ShowFocusBox(controller); // без выбранных чатов прятать нечего — сразу выбор
@@ -1130,6 +1164,24 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		taktOpen->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"taktOpen"_q, checked);
 		}, taktOpen->lifetime());
+
+		section(u"Невидимка"_q);
+		const auto ghost = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Режим невидимки"_q,
+			GhostActive()));
+		ghost->checkedChanges() | rpl::on_next([=](bool checked) {
+			SetGhost(controller, checked);
+		}, ghost->lifetime());
+		GhostValue() | rpl::on_next([=](bool on) {
+			ghost->setChecked(on);
+		}, ghost->lifetime());
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Для всех вы «не в сети»: Плюм не сообщает, что вы онлайн, «Время захода» — «Никто», "
+			u"собеседники не видят «печатает…». Чаты и уведомления — как обычно. "
+			u"Выключите — время захода вернётся как было. Быстро — в меню ☰."_q,
+			st::boxDividerLabel));
 
 		section(u"Фокус"_q);
 		box->addRow(object_ptr<Ui::LinkButton>(
