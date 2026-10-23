@@ -1298,16 +1298,16 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			u"Сообщения приходят как обычно. Быстро — в меню ☰."_q,
 			st::boxDividerLabel));
 
-		section(u"Takt — помощник"_q);
+		section(u"Помощник"_q);
 		box->addRow(object_ptr<Ui::LinkButton>(
 			box,
-			u"Открыть Takt (Ctrl+T)"_q))->setClickedCallback([=] {
+			u"Открыть помощника (Ctrl+T)"_q))->setClickedCallback([=] {
 			box->closeBox();
 			ShowAssistant(controller);
 		});
 		const auto taktOpen = box->addRow(object_ptr<Ui::Checkbox>(
 			box,
-			u"Открывать Takt при запуске Плюма"_q,
+			u"Открывать помощника при запуске Плюма"_q,
 			ReadState().value(u"taktOpen"_q).toBool(true)));
 		taktOpen->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"taktOpen"_q, checked);

@@ -784,7 +784,7 @@ void MainMenu::setupMenu() {
 		controller->showSettings();
 	});
 	addAction(
-		rpl::single(u"Takt — помощник (Ctrl+T)"_q),
+		rpl::single(u"Помощник (Ctrl+T)"_q),
 		{ &st::menuIconBotCommands }
 	)->setClickedCallback([=] {
 		TgLite::ShowAssistant(controller);

@@ -237,7 +237,7 @@ QJsonArray Tools() {
 }
 
 QString SystemPrompt() {
-	return u"Ты — Takt, помощник внутри Плюма, личного Telegram-клиента Александра. Сейчас "_q
+	return u"Ты — помощник внутри Плюма (так тебя и называют — «Помощник»; слова Takt и Такт владельцу не пиши, бота Такт тоже называй просто «помощник»), личного Telegram-клиента Александра. Сейчас "_q
 		+ QDateTime::currentDateTime().toString(u"dd.MM.yyyy HH:mm"_q) + u". "
 		u"Отвечай по-русски, коротко и просто, обращайся на «вы». Делай то, что просят, с помощью инструментов: "
 		u"находи чаты через list_chats, папки — list_folders, создавай и меняй папки, читай сообщения (у каждого есть #номер), отправляй. "
@@ -342,7 +342,7 @@ public:
 			Fn<bool()> isCurrent,
 			Fn<void(QStringList, QString)> done) {
 		if (AiKey().isEmpty()) {
-			done({}, u"Откройте Takt и укажите ключ помощника"_q);
+			done({}, u"Откройте помощника и укажите его ключ"_q);
 			return;
 		}
 		readMessages(history, 12, [=](QString context, bool failed) {
@@ -361,7 +361,7 @@ public:
 				{ u"owner"_q, _session->user()->name() },
 			};
 			const auto body = QJsonObject{
-				{ u"system"_q, u"Ты Такт. Помоги владельцу быстро ответить в открытом чате. "
+				{ u"system"_q, u"Ты помощник Плюма. Помоги владельцу быстро ответить в открытом чате. "
 					"Верни только JSON: {\"suggestions\":[\"ответ 1\",\"ответ 2\",\"ответ 3\"]}. "
 					"Три разных коротких естественных ответа от первого лица, каждый до 220 символов. "
 					"Имя владельца указано в поле owner. Учитывай мысль владельца и язык разговора. Не придумывай факты, обещания, даты и согласие на оплату. "
@@ -376,7 +376,7 @@ public:
 				reply->deleteLater();
 				if (!isCurrent()) return;
 				if (reply->error() != QNetworkReply::NoError) {
-					done({}, u"Нет связи с Тактом. Нажмите, чтобы повторить"_q);
+					done({}, u"Нет связи с помощником. Нажмите, чтобы повторить"_q);
 					return;
 				}
 				const auto data = QJsonDocument::fromJson(reply->readAll()).object();
@@ -650,7 +650,7 @@ private:
 			// Окно Takt открыто — спрашиваем в нём, а не в главном окне за ним.
 			const auto box = new QMessageBox(
 				QMessageBox::Question,
-				u"Takt"_q,
+				u"Помощник"_q,
 				text,
 				QMessageBox::NoButton,
 				_window);
@@ -841,7 +841,7 @@ private:
 				fromId,
 				done);
 		} else if (name == u"takt_status"_q) {
-			add(u"· смотрю, что делал Такт"_q);
+			add(u"· смотрю, что делал помощник"_q);
 			takt(u"/api/state"_q, std::nullopt, [=](QJsonObject data, QString error) {
 				if (!error.isEmpty()) {
 					done(error, true);
@@ -855,7 +855,7 @@ private:
 				done(u"пустая фраза"_q, true);
 				return;
 			}
-			add(u"· Такту: «"_q + text + u"»"_q);
+			add(u"· помощнику: «"_q + text + u"»"_q);
 			takt(u"/api/act"_q, QJsonObject{
 				{ u"action"_q, u"command"_q },
 				{ u"text"_q, text },
@@ -867,7 +867,7 @@ private:
 		} else if (name == u"takt_chat_mode"_q) {
 			const auto mode = input.value(u"mode"_q).toString().trimmed();
 			const auto chatId = input.value(u"chat_id"_q).toVariant().toLongLong();
-			add(u"· меняю режим Такта для чата"_q);
+			add(u"· меняю режим помощника для чата"_q);
 			takt(u"/api/act"_q, QJsonObject{
 				{ u"action"_q, u"chat_mode"_q },
 				{ u"id"_q, chatId },
@@ -974,7 +974,7 @@ private:
 		const auto op = input.value(u"op"_q).toString();
 		const auto text = input.value(u"text"_q).toString().trimmed();
 		const auto act = [=] {
-			add(u"· Такт: "_q + (op == u"send"_q || op == u"edit"_q
+			add(u"· помощник: "_q + (op == u"send"_q || op == u"edit"_q
 				? u"отправляю ответ"_q
 				: op == u"discard"_q
 				? u"не отвечаем"_q
@@ -998,7 +998,7 @@ private:
 		const auto who = (i != end(_taktEntries)) ? i->second.first : QString();
 		const auto what = (op == u"edit"_q) ? text : (i != end(_taktEntries)) ? i->second.second : QString();
 		confirm(
-			u"Такт отправит от вашего имени"_q
+			u"Помощник отправит от вашего имени"_q
 				+ (who.isEmpty() ? QString() : u" — «"_q + who + u"»"_q)
 				+ u":\n\n"_q + (what.isEmpty() ? u"(текст черновика #"_q + QString::number(id) + u")"_q : what),
 			act,
@@ -1038,11 +1038,11 @@ private:
 					SetState(u"taktKey"_q, QString());
 					takt(path, body, done, true);
 				} else if (status == 401) {
-					done({}, u"Такт не принял ключ"_q);
+					done({}, u"Помощник не принял ключ"_q);
 				} else if (!data.value(u"error"_q).toString().isEmpty()) {
 					done({}, data.value(u"error"_q).toString());
 				} else if (reply->error() != QNetworkReply::NoError || data.isEmpty()) {
-					done({}, u"нет связи с Тактом: "_q + reply->errorString());
+					done({}, u"нет связи с помощником: "_q + reply->errorString());
 				} else {
 					done(data, QString());
 				}
@@ -1057,11 +1057,11 @@ private:
 		}
 		const auto bot = _session->data().userLoaded(UserId(kTaktBotId));
 		if (!bot) {
-			done(u"не нашёл бота Такт (@takt52_bot) — откройте его чат в Плюме один раз и повторите"_q);
+			done(u"не нашёл бота @takt52_bot — откройте его чат в Плюме один раз и повторите"_q);
 			return;
 		}
 		const auto history = _session->data().history(bot);
-		add(u"· подключаю Такт: пишу боту «plume»"_q);
+		add(u"· подключаю помощника: пишу боту «plume»"_q);
 		const auto since = base::unixtime::now() - 5;
 		send(history, u"plume"_q);
 		waitTaktKey(history, since, 0, std::move(done));
@@ -1073,7 +1073,7 @@ private:
 			int attempt,
 			Fn<void(QString)> done) {
 		if (attempt >= 12) {
-			done(u"Такт не прислал ключ — проверьте, что бот @takt52_bot работает"_q);
+			done(u"Помощник не прислал ключ — проверьте, что бот @takt52_bot работает"_q);
 			return;
 		}
 		const auto session = _session;
@@ -1114,7 +1114,7 @@ private:
 					return;
 				}
 				SetState(u"taktKey"_q, key);
-				add(u"· Такт подключён"_q);
+				add(u"· помощник подключён"_q);
 				done(QString());
 			}).fail([=](const MTP::Error &) {
 				if (weak) {
@@ -1499,7 +1499,7 @@ void Assistant::showWindow() {
 	if (_docked) {
 		window->resize(420, 600);
 	} else {
-		window->setWindowTitle(u"Takt — помощник Плюма"_q);
+		window->setWindowTitle(u"Помощник Плюма"_q);
 		window->setWindowIcon(_controller->widget()->windowIcon());
 		window->resize(460, 680);
 		window->setMinimumSize(360, 440);
@@ -1552,7 +1552,7 @@ void Assistant::showWindow() {
 	headerLayout->setContentsMargins(16, 10, 10, 10);
 	const auto titles = new QVBoxLayout();
 	titles->setSpacing(0);
-	const auto title = new QLabel(u"Takt"_q, header);
+	const auto title = new QLabel(u"Помощник"_q, header);
 	title->setObjectName(u"title"_q);
 	const auto subtitle = new QLabel(u"отвечает людям за вас, ведёт чаты и папки · Ctrl+T"_q, header);
 	subtitle->setObjectName(u"subtitle"_q);
@@ -1612,7 +1612,7 @@ void Assistant::showWindow() {
 	const auto inputRow = new QHBoxLayout();
 	inputRow->setSpacing(8);
 	const auto input = new QPlainTextEdit(bottom);
-	input->setPlaceholderText(u"Напишите Takt… (Enter — отправить, Shift+Enter — новая строка)"_q);
+	input->setPlaceholderText(u"Напишите помощнику… (Enter — отправить, Shift+Enter — новая строка)"_q);
 	input->setFixedHeight(64);
 	_input = input;
 	const auto sendButton = new QPushButton(u"Отправить"_q, bottom);
@@ -1634,10 +1634,10 @@ void Assistant::showWindow() {
 		QObject::connect(button, &QPushButton::clicked, [=] { askNow(text); });
 		quick->addWidget(button);
 	};
-	quickButton(u"Что нового"_q, u"Что нового у Такта: кому он ответил и кто ждёт моего ответа?"_q);
-	quickButton(u"Черновики"_q, u"Покажи черновики Такта, которые ждут моего решения"_q);
-	quickButton(u"Пауза"_q, u"Такт, стоп — никому не отвечай, пока не скажу"_q);
-	quickButton(u"Продолжить"_q, u"Такт, старт — продолжай отвечать"_q);
+	quickButton(u"Что нового"_q, u"Что нового у помощника: кому он ответил и кто ждёт моего ответа?"_q);
+	quickButton(u"Черновики"_q, u"Покажи черновики помощника, которые ждут моего решения"_q);
+	quickButton(u"Пауза"_q, u"Помощник, стоп — никому не отвечай, пока не скажу"_q);
+	quickButton(u"Продолжить"_q, u"Помощник, старт — продолжай отвечать"_q);
 	quick->addStretch(1);
 
 	const auto fill = [=](const QString &text) {
@@ -1766,15 +1766,15 @@ void Assistant::showWindow() {
 					"<td align=\"right\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#3a7bd5\" style=\"color:#ffffff\">"_q
 				: u"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:6px 0\"><tr>"
 					"<td align=\"left\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#ffffff\" style=\"color:#1b1f24\">"
-					"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Takt</span><br>"_q;
+					"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Помощник</span><br>"_q;
 			html += BubbleHtml(text);
 			html += mine
 				? u"</td></tr></table></td></tr></table>"_q
 				: u"</td></tr></table></td><td width=\"18%\"></td></tr></table>"_q;
 		};
 		if (_lines.empty()) {
-			bubble(false, u"Здравствуйте! Я Takt. Пишите обычными словами, например:\n"
-				"• «что нового?» — кому Такт ответил и кто ждёт вас\n"
+			bubble(false, u"Здравствуйте! Я помощник Плюма. Пишите обычными словами, например:\n"
+				"• «что нового?» — кому помощник ответил и кто ждёт вас\n"
 				"• «отправь Диме черновик» или «ответь Оле: буду в 18»\n"
 				"• «меня нет до 20», «пауза», «Оле отвечай сам»\n"
 				"• «правило: цену не называй»\n"
@@ -1795,7 +1795,7 @@ void Assistant::showWindow() {
 			}
 		}
 		if (_busy) {
-			html += u"<p style=\"color:#8a94a0;font-size:12px;margin:6px 10px\"><i>Takt печатает…</i></p>"_q;
+			html += u"<p style=\"color:#8a94a0;font-size:12px;margin:6px 10px\"><i>Помощник печатает…</i></p>"_q;
 		}
 		html += u"</body></html>"_q;
 		feed->setHtml(html);
@@ -1893,7 +1893,7 @@ not_null<Assistant*> AssistantFor(not_null<Window::SessionController*> controlle
 
 void ShowKeyBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Takt — помощник Плюма"_q));
+		box->setTitle(rpl::single(u"Помощник Плюма"_q));
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
 			u"Введите ключ доступа к помощнику. Он сохранится на этом компьютере."_q,
@@ -2097,13 +2097,13 @@ public:
 		setCursor(style::cur_pointer);
 		const auto badge = st::dialogsUnreadFont->width(u"99"_q) + style::ConvertScale(10);
 		resize(
-			st::semiboldFont->width(u"Takt"_q) + badge + style::ConvertScale(22),
+			st::semiboldFont->width(u"Помощник"_q) + badge + style::ConvertScale(22),
 			st::dialogsLock.height);
 		std::move(count) | rpl::on_next([=](int value) {
 			_count = value;
 			setToolTip(value > 0
-				? u"Takt: ждут вас — "_q + QString::number(value) + u" (Ctrl+T)"_q
-				: u"Takt — помощник (Ctrl+T)"_q);
+				? u"Помощник: ждут вас — "_q + QString::number(value) + u" (Ctrl+T)"_q
+				: u"Помощник (Ctrl+T)"_q);
 			update();
 		}, lifetime());
 	}
@@ -2117,7 +2117,7 @@ protected:
 		p.setPen(Qt::NoPen);
 		p.setBrush(isOver() ? st::activeButtonBgOver : st::activeButtonBg);
 		p.drawRoundedRect(pill, h / 2., h / 2.);
-		const auto text = u"Takt"_q;
+		const auto text = u"Помощник"_q;
 		const auto textWidth = st::semiboldFont->width(text);
 		const auto badgeText = _count > 99 ? u"99+"_q : QString::number(_count);
 		const auto badgeHeight = st::dialogsUnreadFont->height + style::ConvertScale(4);
@@ -2223,8 +2223,8 @@ Ui::AbstractButton *CreateChatTaktButton(
 		Fn<void()> click) {
 	const auto result = new TaktButton(parent, rpl::single(0));
 	result->resize(result->width(), style::ConvertScale(30));
-	result->setToolTip(u"Takt в этом чате: разослать участникам, переслать, ответить, сводка"_q);
-	result->setAccessibleName(u"Takt в этом чате"_q);
+	result->setToolTip(u"Помощник в этом чате: разослать участникам, переслать, ответить, сводка"_q);
+	result->setAccessibleName(u"Помощник в этом чате"_q);
 	result->setClickedCallback(std::move(click));
 	return result;
 }
@@ -2236,7 +2236,7 @@ Ui::AbstractButton *CreateTaktButton(
 	const auto result = new TaktButton(
 		parent,
 		AssistantFor(controller)->attentionValue());
-	result->setAccessibleName(u"Takt — помощник"_q);
+	result->setAccessibleName(u"Помощник"_q);
 	result->setClickedCallback([=] {
 		ToggleAssistant(controller);
 	});
@@ -2280,7 +2280,7 @@ public:
 	}
 
 	static int naturalWidth() {
-		return st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(18);
+		return st::semiboldFont->width(u"Помощник"_q) + style::ConvertScale(18);
 	}
 	static int naturalHeight() {
 		return style::ConvertScale(26);
@@ -2297,7 +2297,7 @@ protected:
 		p.drawRoundedRect(r, radius, radius);
 		p.setFont(st::semiboldFont);
 		p.setPen(_loading() ? st::windowSubTextFg : st::windowActiveTextFg);
-		p.drawText(r, Qt::AlignCenter, u"Takt"_q);
+		p.drawText(r, Qt::AlignCenter, u"Помощник"_q);
 	}
 	void mouseMoveEvent(QMouseEvent *e) override {
 		if (!_over) {
@@ -2371,8 +2371,8 @@ protected:
 		const auto header = headerRect();
 		p.setFont(st::semiboldFont);
 		p.setPen(st::windowActiveTextFg);
-		p.drawText(header.adjusted(pad, 0, 0, 0), Qt::AlignVCenter, u"Takt"_q);
-		const auto tw = st::semiboldFont->width(u"Takt"_q) + style::ConvertScale(6);
+		p.drawText(header.adjusted(pad, 0, 0, 0), Qt::AlignVCenter, u"Помощник"_q);
+		const auto tw = st::semiboldFont->width(u"Помощник"_q) + style::ConvertScale(6);
 		const auto more = moreRect();
 		const auto status = header.adjusted(pad + tw, 0, 0, 0);
 		p.setFont(st::normalFont);
@@ -2502,8 +2502,8 @@ private:
 	void updateButtonTip() {
 		if (!_button) return;
 		_button->setToolTip(_field->getTextWithTags().text.trimmed().isEmpty()
-			? u"Takt подскажет ответ"_q
-			: u"Takt предложит варианты вашего ответа"_q);
+			? u"Помощник подскажет ответ"_q
+			: u"Помощник предложит варианты вашего ответа"_q);
 	}
 
 	void apply(int i) {

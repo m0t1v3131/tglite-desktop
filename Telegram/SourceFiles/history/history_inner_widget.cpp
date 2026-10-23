@@ -3185,13 +3185,13 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				Element::Moused())
 		) != HistoryView::PointState::GroupPart);
 	const auto addSelectMessageAction = [&](not_null<HistoryItem*> item) {
-		// Plume: позвать Takt с этим сообщением — разослать участникам, переслать, ответить.
+		// Plume: позвать помощника с этим сообщением — разослать участникам, переслать, ответить.
 		if (item->isRegular() && !item->history()->peer->isSelf()) {
 			const auto controller = _controller;
 			const auto peer = item->history()->peer;
 			const auto msgId = item->id;
 			const auto text = item->originalText().text;
-			_menu->addAction(u"Спросить Takt"_q, [=] {
+			_menu->addAction(u"Спросить помощника"_q, [=] {
 				TgLite::ShowAssistantForChat(controller, peer, msgId, text);
 			}, &st::menuIconBot);
 		}

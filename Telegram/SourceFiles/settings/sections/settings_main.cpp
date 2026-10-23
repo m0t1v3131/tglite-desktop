@@ -364,20 +364,20 @@ void Cover::refreshQrButtonGeometry(int newWidth) {
 	_qrButton->moveToRight(buttonRight - inset, buttonTop, newWidth);
 }
 
-// Плюм: свои настройки — отдельным пунктом в самом верху (Takt, VPN, лёгкий режим, обновления).
+// Плюм: свои настройки — отдельным пунктом в самом верху (помощник, VPN, лёгкий режим, обновления).
 void BuildPlumeSection(SectionBuilder &builder) {
 	const auto controller = builder.controller();
 	builder.addButton({
 		.id = u"main/plume"_q,
 		.title = rpl::single(u"Настройки Плюма"_q),
 		.icon = { &st::menuIconExperimental },
-		.label = rpl::single(u"Takt, фокус, VPN, обновления"_q),
+		.label = rpl::single(u"Помощник, фокус, VPN, обновления"_q),
 		.onClick = [=] { TgLite::ShowSettingsBox(controller); },
 		.keywords = { u"plume"_q, u"плюм"_q, u"vpn"_q, u"takt"_q, u"update"_q },
 	});
 	builder.addButton({
 		.id = u"main/takt"_q,
-		.title = rpl::single(u"Takt — помощник"_q),
+		.title = rpl::single(u"Помощник"_q),
 		.icon = { &st::menuIconBotCommands },
 		.label = rpl::single(u"Ctrl+T"_q),
 		.onClick = [=] { TgLite::ShowAssistant(controller); },
