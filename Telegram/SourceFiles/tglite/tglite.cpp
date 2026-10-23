@@ -910,6 +910,35 @@ bool ArchiveJunkHidden(not_null<const History*> history) {
 		&& (channel->isBroadcast() || channel->isPublic());
 }
 
+// Бот Такт спрятан: всё с ним — через Помощника, а сам бот отвечает людям на сервере.
+constexpr auto kHiddenTaktBotId = uint64(8909004776); // @takt52_bot
+
+bool &HideTaktBotFlag() {
+	static auto result = ReadState().value(u"hideTaktBot"_q).toBool(true);
+	return result;
+}
+
+bool HideTaktBot() {
+	return HideTaktBotFlag();
+}
+
+bool TaktBotHidden(not_null<const History*> history) {
+	return HideTaktBotFlag()
+		&& (history->peer->id == peerFromUser(UserId(kHiddenTaktBotId)));
+}
+
+void SetHideTaktBot(not_null<Main::Session*> session, bool enabled) {
+	if (HideTaktBotFlag() == enabled) {
+		return;
+	}
+	HideTaktBotFlag() = enabled;
+	SetState(u"hideTaktBot"_q, enabled);
+	const auto peer = peerFromUser(UserId(kHiddenTaktBotId));
+	if (const auto history = session->data().historyLoaded(peer)) {
+		history->updateChatListExistence();
+	}
+}
+
 void SetHideArchiveJunk(not_null<Main::Session*> session, bool enabled) {
 	if (HideArchiveJunkFlag() == enabled) {
 		return;
@@ -1312,6 +1341,18 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		taktOpen->checkedChanges() | rpl::on_next([](bool checked) {
 			SetState(u"taktOpen"_q, checked);
 		}, taktOpen->lifetime());
+		const auto hideBot = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			u"Спрятать бота Такт"_q,
+			HideTaktBot()));
+		hideBot->checkedChanges() | rpl::on_next([=](bool checked) {
+			SetHideTaktBot(&controller->session(), checked);
+		}, hideBot->lifetime());
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			u"Чат с @takt52_bot не виден в списке и не присылает уведомлений — "
+			u"всё с ним делает Помощник. Сам бот работает и отвечает людям, как раньше."_q,
+			st::boxDividerLabel));
 
 		section(u"Невидимка"_q);
 		const auto ghost = box->addRow(object_ptr<Ui::Checkbox>(

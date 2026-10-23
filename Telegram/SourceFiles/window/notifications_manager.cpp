@@ -318,6 +318,7 @@ System::SkipState System::skipNotification(
 	const auto thread = item->maybeNotificationThread();
 	if (!thread
 		|| TgLite::MuteAll() // Плюм: все уведомления выключены
+		|| TgLite::TaktBotHidden(item->history()) // Плюм: бот Такт спрятан
 		|| TgLite::FocusHidden(item->history()) // Плюм: фокус-режим
 		|| TgLite::AccountHidden(&item->history()->session().account()) // Плюм: скрытый аккаунт
 		|| !thread->currentNotification()

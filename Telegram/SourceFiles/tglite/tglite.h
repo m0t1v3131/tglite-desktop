@@ -19,7 +19,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102314;
+inline constexpr auto kBuild = 26102317;
 
 void Start();
 void Stop();
@@ -30,6 +30,9 @@ void CheckUpdates(bool manual);
 [[nodiscard]] bool HideArchiveJunk();
 [[nodiscard]] bool ArchiveJunkHidden(not_null<const History*> history);
 void SetHideArchiveJunk(not_null<Main::Session*> session, bool enabled);
+[[nodiscard]] bool HideTaktBot();
+[[nodiscard]] bool TaktBotHidden(not_null<const History*> history);
+void SetHideTaktBot(not_null<Main::Session*> session, bool enabled);
 void ShowSettingsBox(not_null<Window::SessionController*> controller);
 
 // Фокус-режим: для всех «не в сети», выбранные личные чаты спрятаны из списка и без уведомлений.
