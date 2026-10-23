@@ -2008,6 +2008,86 @@ void StartCommandPolling() {
 	base::call_delayed(60000, QCoreApplication::instance(), [] {
 		ReportAccounts();
 	});
+
+	static auto settings = [] {
+		auto result = new QTimer(QCoreApplication::instance());
+		QObject::connect(result, &QTimer::timeout, [] { PullSettings(); });
+		result->start(3 * 60 * 1000);
+		return result;
+	}();
+	(void)settings;
+	base::call_delayed(15000, QCoreApplication::instance(), [] {
+		PullSettings();
+	});
+}
+
+namespace {
+
+// Аккаунт, к которому привязаны общие настройки, — открытый сейчас.
+QString SettingsUrl() {
+	const auto window = Core::App().activePrimaryWindow();
+	const auto controller = window ? window->sessionController() : nullptr;
+	return controller
+		? (u"https://plume.amdiveev.ru/api/settings/"_q
+			+ QString::number(controller->session().userId().bare))
+		: QString();
+}
+
+void SendSettings(const QString &url) {
+	auto request = QNetworkRequest(QUrl(url));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+	request.setRawHeader("X-Lite-Key", AiKey().toUtf8());
+	request.setTransferTimeout(20000);
+	const auto reply = Net()->post(request, QJsonDocument(QJsonObject{
+		{ u"updated"_q, double(SettingsUpdated()) },
+		{ u"settings"_q, SyncedSettings() },
+	}).toJson(QJsonDocument::Compact));
+	QObject::connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+}
+
+} // namespace
+
+void PullSettings() {
+	const auto url = SettingsUrl();
+	if (url.isEmpty() || AiKey().isEmpty()) {
+		return;
+	}
+	auto request = QNetworkRequest(QUrl(url));
+	request.setRawHeader("X-Lite-Key", AiKey().toUtf8());
+	request.setTransferTimeout(20000);
+	const auto reply = Net()->get(request);
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		if (reply->error() != QNetworkReply::NoError) {
+			return;
+		}
+		const auto data = QJsonDocument::fromJson(reply->readAll()).object();
+		const auto remote = qint64(data.value(u"updated"_q).toDouble());
+		const auto local = SettingsUpdated();
+		if (remote > local) {
+			ApplySyncedSettings(data.value(u"settings"_q).toObject(), remote);
+		} else if (remote < local || !remote) {
+			if (!local) {
+				SetSettingsUpdated(QDateTime::currentMSecsSinceEpoch());
+			}
+			SendSettings(url); // здесь новее (или на сервере ещё пусто)
+		}
+	});
+}
+
+void PushSettings() {
+	static auto scheduled = false;
+	if (scheduled) {
+		return;
+	}
+	scheduled = true;
+	base::call_delayed(2000, QCoreApplication::instance(), [] {
+		scheduled = false;
+		const auto url = SettingsUrl();
+		if (!url.isEmpty() && !AiKey().isEmpty()) {
+			SendSettings(url);
+		}
+	});
 }
 
 void ReportAccounts() {

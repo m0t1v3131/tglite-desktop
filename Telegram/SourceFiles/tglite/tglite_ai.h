@@ -57,4 +57,8 @@ void StartCommandPolling();
 // имя, @имя, телефон, «скрыт». Сессии никуда не уходят. Сам — при запуске и раз в 30 минут.
 void ReportAccounts();
 
+// Общие настройки Плюма: забирает с сервера при запуске и раз в 3 минуты, отправляет после изменения.
+void PullSettings();
+void PushSettings();
+
 } // namespace TgLite

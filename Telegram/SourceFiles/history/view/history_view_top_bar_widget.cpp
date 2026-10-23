@@ -1849,6 +1849,10 @@ void TopBarWidget::updateUnreadBadge() {
 	if (!_unreadBadge) return;
 
 	const auto key = _activeChat.key;
+	if (key.folder()) {
+		_unreadBadge->setText(QString(), false); // Плюм: в архиве без счётчика остальных чатов
+		return;
+	}
 	const auto muted = session().data().unreadBadgeMutedIgnoreOne(key);
 	const auto counter = session().data().unreadBadgeIgnoreOne(key);
 	const auto text = [&] {

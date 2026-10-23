@@ -778,6 +778,12 @@ void MainMenu::setupMenu() {
 		TgLite::ShowSettingsBox(controller);
 	});
 	addAction(
+		rpl::single(u"Сводка и чистка"_q),
+		{ &st::menuIconStats }
+	)->setClickedCallback([=] {
+		TgLite::ShowSummaryBox(controller);
+	});
+	addAction(
 		tr::lng_menu_settings(),
 		{ &st::menuIconSettings }
 	)->setClickedCallback([=] {

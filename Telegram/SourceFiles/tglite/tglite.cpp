@@ -12,11 +12,13 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
+#include "base/unixtime.h"
 #include "api/api_updates.h"
 #include "api/api_user_privacy.h"
 #include "apiwrap.h"
 #include "boxes/peer_list_controllers.h"
 #include "data/data_channel.h"
+#include "data/data_chat.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
 #include "data/data_thread.h"
@@ -47,8 +49,10 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_settings.h"
+#include "styles/style_basic.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -77,6 +81,8 @@ namespace {
 constexpr auto kPort = 10879;
 constexpr auto kUpdateUrl = "https://plume.amdiveev.ru/tglite-desktop.json";
 constexpr auto kSubscriptionAgent = "Happ/3.0.0";
+constexpr auto kTaktBotId = uint64(8909004776); // бот Такт — свой, из архива не прячем
+constexpr auto kQuietUnread = 30;
 
 struct Entry {
 	QString name;
@@ -131,10 +137,38 @@ int VpnServer() {
 	return ReadState().value(u"vpnServer"_q).toInt();
 }
 
+// Общие настройки на телефоне, ПК и Mac (plume.amdiveev.ru/api/settings/<id>): эти ключи уходят на сервер.
+bool ApplyingRemote = false;
+
+bool IsSyncedKey(const QString &key) {
+	static const auto keys = base::flat_set<QString>{
+		u"hideStories"_q,
+		u"hideRecentSearch"_q,
+		u"hideArchiveChannels"_q,
+		u"hideArchiveBots"_q,
+		u"quietGroups"_q,
+		u"muteAll"_q,
+		u"ghostMode"_q,
+		u"focusMode"_q,
+		u"focusChats"_q,
+		u"hideTaktBot"_q,
+	};
+	return keys.contains(key);
+}
+
 void SetState(const QString &key, const QJsonValue &value) {
 	auto state = ReadState();
 	state.insert(key, value);
+	const auto synced = !ApplyingRemote && IsSyncedKey(key);
+	if (synced) {
+		state.insert(
+			u"settingsUpdated"_q,
+			double(QDateTime::currentMSecsSinceEpoch()));
+	}
 	WriteState(state);
+	if (synced) {
+		PushSettings();
+	}
 }
 
 QByteArray ReadSubscription() {
@@ -894,20 +928,81 @@ bool &HideArchiveJunkFlag() {
 	return result;
 }
 
-bool HideArchiveJunk() {
-	return HideArchiveJunkFlag();
+bool &HideArchiveBotsFlag() {
+	static auto result = ReadState().value(u"hideArchiveBots"_q).toBool(true);
+	return result;
 }
 
-// Канал или открытая группа в архиве, где вы не создатель и не админ.
+bool &QuietGroupsFlag() {
+	static auto result = ReadState().value(u"quietGroups"_q).toBool(true);
+	return result;
+}
+
+bool HideArchiveJunk() {
+	return HideArchiveJunkFlag() || HideArchiveBotsFlag();
+}
+
+bool HideArchiveBots() {
+	return HideArchiveBotsFlag();
+}
+
+// Канал или открытая группа в архиве, где вы не создатель и не админ, или чужой бот.
+// Закреплённое в архиве не прячем.
 bool ArchiveJunkHidden(not_null<const History*> history) {
-	if (!HideArchiveJunkFlag() || !history->folder()) {
+	if (!history->folder() || history->isPinnedDialog(FilterId())) {
 		return false;
 	}
+	if (const auto user = history->peer->asUser()) {
+		return HideArchiveBotsFlag()
+			&& user->isBot()
+			&& (user->id.value != kTaktBotId)
+			&& !(user->botInfo && user->botInfo->canEditInformation);
+	}
 	const auto channel = history->peer->asChannel();
-	return channel
+	return HideArchiveJunkFlag()
+		&& channel
 		&& !channel->amCreator()
 		&& !channel->hasAdminRights()
 		&& (channel->isBroadcast() || channel->isPublic());
+}
+
+void SetHideArchiveBots(not_null<Main::Session*> session, bool enabled) {
+	if (HideArchiveBotsFlag() == enabled) {
+		return;
+	}
+	HideArchiveBotsFlag() = enabled;
+	SetState(u"hideArchiveBots"_q, enabled);
+	session->data().enumerateUsers([=](not_null<UserData*> user) {
+		if (!user->isBot()) {
+			return;
+		} else if (const auto history = session->data().historyLoaded(user)) {
+			history->updateChatListExistence();
+		}
+	});
+}
+
+bool QuietGroups() {
+	return QuietGroupsFlag();
+}
+
+// Тихая группа: вы её не читаете (больше kQuietUnread непрочитанных), вы не создатель и не админ.
+// Плюм не присылает от неё уведомлений, кроме упоминаний и ответов вам.
+bool QuietGroup(not_null<const History*> history) {
+	if (!QuietGroupsFlag() || history->unreadCount() < kQuietUnread) {
+		return false;
+	} else if (const auto channel = history->peer->asChannel()) {
+		return channel->isMegagroup()
+			&& !channel->amCreator()
+			&& !channel->hasAdminRights();
+	} else if (const auto chat = history->peer->asChat()) {
+		return !chat->amCreator() && !chat->hasAdminRights();
+	}
+	return false;
+}
+
+void SetQuietGroups(bool enabled) {
+	QuietGroupsFlag() = enabled;
+	SetState(u"quietGroups"_q, enabled);
 }
 
 // Бот Такт спрятан: всё с ним — через Помощника, а сам бот отвечает людям на сервере.
@@ -1135,6 +1230,105 @@ void ShowFocusBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
+QJsonObject SyncedSettings() {
+	auto chats = QJsonArray();
+	for (const auto id : Focus().chats) {
+		if (peerIsUser(PeerId(id))) {
+			chats.push_back(QString::number(id));
+		}
+	}
+	return QJsonObject{
+		{ u"hideStories"_q, HideStories() },
+		{ u"hideRecentSearch"_q, HideRecentSearch() },
+		{ u"hideArchiveChannels"_q, HideArchiveJunkFlag() },
+		{ u"hideArchiveBots"_q, HideArchiveBotsFlag() },
+		{ u"quietGroups"_q, QuietGroupsFlag() },
+		{ u"muteAll"_q, MuteAll() },
+		{ u"ghostMode"_q, GhostActive() },
+		{ u"focusMode"_q, FocusActive() },
+		{ u"focusChats"_q, chats },
+		{ u"hideTaktBot"_q, HideTaktBotFlag() },
+	};
+}
+
+qint64 SettingsUpdated() {
+	return qint64(ReadState().value(u"settingsUpdated"_q).toDouble());
+}
+
+void SetSettingsUpdated(qint64 updated) {
+	ApplyingRemote = true;
+	SetState(u"settingsUpdated"_q, double(updated));
+	ApplyingRemote = false;
+}
+
+bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
+	const auto window = Core::App().activePrimaryWindow();
+	const auto controller = window ? window->sessionController() : nullptr;
+	if (!controller) {
+		return false;
+	}
+	const auto session = &controller->session();
+	ApplyingRemote = true;
+	const auto flag = [&](const QString &key, bool current, auto &&apply) {
+		if (settings.contains(key) && settings.value(key).toBool() != current) {
+			apply(settings.value(key).toBool());
+		}
+	};
+	flag(u"hideStories"_q, HideStories(), [](bool v) {
+		SetState(u"hideStories"_q, v);
+	});
+	flag(u"hideRecentSearch"_q, HideRecentSearch(), [](bool v) {
+		SetState(u"hideRecentSearch"_q, v);
+	});
+	flag(u"hideArchiveChannels"_q, HideArchiveJunkFlag(), [&](bool v) {
+		SetHideArchiveJunk(session, v);
+	});
+	flag(u"hideArchiveBots"_q, HideArchiveBotsFlag(), [&](bool v) {
+		SetHideArchiveBots(session, v);
+	});
+	flag(u"hideTaktBot"_q, HideTaktBotFlag(), [&](bool v) {
+		SetHideTaktBot(session, v);
+	});
+	flag(u"quietGroups"_q, QuietGroupsFlag(), [](bool v) {
+		SetQuietGroups(v);
+	});
+	flag(u"muteAll"_q, MuteAll(), [&](bool v) {
+		SetMuteAll(controller, v);
+	});
+	if (settings.contains(u"focusChats"_q)) {
+		auto chats = base::flat_set<uint64>();
+		for (const auto &id : settings.value(u"focusChats"_q).toArray()) {
+			if (const auto value = id.toString().toULongLong()) {
+				chats.emplace(value);
+			}
+		}
+		auto &focus = Focus();
+		if (chats != focus.chats) {
+			const auto was = focus.chats;
+			focus.chats = chats;
+			SaveFocusChats();
+			for (const auto id : was) {
+				RefreshFocusChat(session, id);
+			}
+			for (const auto id : chats) {
+				RefreshFocusChat(session, id);
+			}
+		}
+	}
+	const auto shown = FocusBoxShown;
+	FocusBoxShown = true; // выбор чатов с другого устройства не открываем
+	flag(u"ghostMode"_q, GhostActive(), [&](bool v) {
+		SetGhost(controller, v);
+	});
+	flag(u"focusMode"_q, FocusActive(), [&](bool v) {
+		SetFocus(controller, v);
+	});
+	FocusBoxShown = shown;
+	SetState(u"settingsUpdated"_q, double(updated));
+	ApplyingRemote = false;
+	return true;
+}
+
 void CheckUpdates(bool manual) {
 	static auto checking = false;
 	if (checking) return;
@@ -1301,106 +1495,413 @@ void Stop() {
 	StopXray();
 }
 
+namespace {
+
+// Переключатель как в настройках Telegram — ползунок на всю строку.
+not_null<Ui::SettingsButton*> AddToggle(
+		not_null<Ui::GenericBox*> box,
+		const QString &text,
+		rpl::producer<bool> value) {
+	const auto button = box->addRow(
+		object_ptr<Ui::SettingsButton>(
+			box,
+			rpl::single(text),
+			st::settingsButtonNoIcon),
+		style::margins());
+	button->toggleOn(std::move(value));
+	return button;
+}
+
+not_null<Ui::SettingsButton*> AddLink(
+		not_null<Ui::GenericBox*> box,
+		const QString &text) {
+	return box->addRow(
+		object_ptr<Ui::SettingsButton>(
+			box,
+			rpl::single(text),
+			st::settingsButtonNoIcon),
+		style::margins());
+}
+
+void AddHint(not_null<Ui::GenericBox*> box, const QString &text) {
+	box->addRow(
+		object_ptr<Ui::FlatLabel>(box, text, st::boxDividerLabel),
+		style::margins(
+			st::boxRowPadding.left(),
+			0,
+			st::boxRowPadding.right(),
+			st::boxRowPadding.bottom()));
+}
+
+QFont StatFont(int size) {
+	auto result = st::semiboldFont->f;
+	result.setPixelSize(style::ConvertScale(size));
+	return result;
+}
+
+} // namespace
+
+void ShowSummaryBox(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	struct Noisy {
+		QString name;
+		int unread = 0;
+	};
+	auto total = 0;
+	auto hidden = 0;
+	auto noisy = std::vector<Noisy>();
+	auto dead = std::vector<std::pair<int, not_null<ChannelData*>>>();
+	const auto now = base::unixtime::now();
+	const auto visit = [&](not_null<PeerData*> peer) {
+		const auto history = session->data().historyLoaded(peer);
+		if (!history) {
+			return;
+		}
+		const auto hiddenHere = ArchiveJunkHidden(history);
+		if (!hiddenHere && !history->inChatList()) {
+			return;
+		} else if (hiddenHere) {
+			++hidden;
+		}
+		const auto unread = history->unreadCount();
+		total += unread;
+		if (unread > 0 && (peer->isChat() || peer->isChannel())) {
+			noisy.push_back({ peer->name(), unread });
+		}
+		const auto channel = peer->asChannel();
+		if (channel
+			&& channel->amIn()
+			&& !channel->amCreator()
+			&& !channel->hasAdminRights()
+			&& !history->isPinnedDialog(FilterId())) {
+			const auto last = history->chatListTimeId();
+			if (unread >= 100 || (last && now - last > 90 * 86400)) {
+				dead.emplace_back(unread, channel);
+			}
+		}
+	};
+	session->data().enumerateUsers([&](not_null<UserData*> user) {
+		visit(user);
+	});
+	session->data().enumerateGroups([&](not_null<PeerData*> peer) {
+		visit(peer);
+	});
+	session->data().enumerateBroadcasts([&](not_null<ChannelData*> channel) {
+		visit(channel);
+	});
+	ranges::sort(noisy, ranges::greater(), &Noisy::unread);
+	if (noisy.size() > 5) {
+		noisy.resize(5);
+	}
+	auto inNoisy = 0;
+	for (const auto &entry : noisy) {
+		inNoisy += entry.unread;
+	}
+	ranges::sort(dead, ranges::greater(), [](const auto &p) { return p.first; });
+	if (dead.size() > 80) {
+		dead.erase(dead.begin() + 80, dead.end());
+	}
+
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Сводка"_q));
+		box->setWidth(st::boxWideWidth);
+
+		const auto tiles = box->addRow(object_ptr<Ui::RpWidget>(box));
+		tiles->resize(tiles->width(), style::ConvertScale(152));
+		const auto values = std::vector<std::pair<QString, QString>>{
+			{ QString::number(total), u"непрочитанных"_q },
+			{ (total ? QString::number(inNoisy * 100 / total) : u"0"_q) + '%',
+				u"в "_q + QString::number(noisy.size()) + u" самых шумных"_q },
+			{ QString::number(hidden), u"спрятано в архиве"_q },
+			{ QString::number(dead.size()), u"давно не читаете"_q },
+		};
+		tiles->paintRequest() | rpl::on_next([=] {
+			auto p = QPainter(tiles);
+			auto hq = PainterHighQualityEnabler(p);
+			const auto gap = style::ConvertScale(8);
+			const auto w = (tiles->width() - gap) / 2;
+			const auto h = (tiles->height() - gap) / 2;
+			const auto pad = style::ConvertScale(14);
+			for (auto i = 0; i != int(values.size()); ++i) {
+				const auto r = QRect(
+					(i % 2) * (w + gap),
+					(i / 2) * (h + gap),
+					w,
+					h);
+				p.setPen(Qt::NoPen);
+				p.setBrush(st::windowBgOver);
+				p.drawRoundedRect(r, pad, pad);
+				p.setPen(st::windowFg);
+				p.setFont(StatFont(24));
+				p.drawText(
+					r.x() + pad,
+					r.y() + pad + style::ConvertScale(24),
+					values[i].first);
+				p.setPen(st::windowSubTextFg);
+				p.setFont(st::normalFont);
+				p.drawText(
+					r.x() + pad,
+					r.y() + h - pad,
+					values[i].second);
+			}
+		}, tiles->lifetime());
+
+		const auto section = [=](const QString &title) {
+			box->addRow(
+				object_ptr<Ui::FlatLabel>(box, title, st::defaultSubsectionTitle),
+				st::defaultSubsectionTitlePadding);
+		};
+		if (!noisy.empty()) {
+			section(u"Кто больше всех шумит"_q);
+			const auto rowHeight = style::ConvertScale(40);
+			const auto bars = box->addRow(object_ptr<Ui::RpWidget>(box));
+			bars->resize(bars->width(), rowHeight * int(noisy.size()));
+			const auto max = noisy.front().unread;
+			bars->paintRequest() | rpl::on_next([=] {
+				auto p = QPainter(bars);
+				auto hq = PainterHighQualityEnabler(p);
+				const auto line = style::ConvertScale(4);
+				for (auto i = 0; i != int(noisy.size()); ++i) {
+					const auto top = i * rowHeight;
+					const auto count = QString::number(noisy[i].unread);
+					const auto countWidth = st::normalFont->width(count);
+					p.setFont(st::normalFont);
+					p.setPen(st::windowFg);
+					p.drawText(
+						QRect(0, top, bars->width() - countWidth - line * 4, rowHeight - line * 3),
+						Qt::AlignLeft | Qt::AlignVCenter,
+						st::normalFont->elided(
+							noisy[i].name,
+							bars->width() - countWidth - line * 4));
+					p.setPen(st::windowSubTextFg);
+					p.drawText(
+						QRect(0, top, bars->width(), rowHeight - line * 3),
+						Qt::AlignRight | Qt::AlignVCenter,
+						count);
+					const auto y = top + rowHeight - line * 2;
+					p.setPen(Qt::NoPen);
+					p.setBrush(st::windowBgOver);
+					p.drawRoundedRect(QRect(0, y, bars->width(), line), line / 2., line / 2.);
+					p.setBrush(st::activeButtonBg);
+					p.drawRoundedRect(
+						QRect(0, y, std::max(line, bars->width() * noisy[i].unread / std::max(max, 1)), line),
+						line / 2.,
+						line / 2.);
+				}
+			}, bars->lifetime());
+		}
+
+		struct State {
+			base::flat_set<ChannelData*> chosen;
+			std::vector<not_null<ChannelData*>> queue;
+			int done = 0;
+			bool running = false;
+			rpl::variable<QString> button;
+			Fn<void()> step;
+		};
+		const auto state = box->lifetime().make_state<State>();
+		const auto updateButton = [=] {
+			state->button = state->running
+				? u"Остановить"_q
+				: state->chosen.empty()
+				? u"Готово"_q
+				: (u"Выйти из "_q + QString::number(state->chosen.size()));
+		};
+		if (!dead.empty()) {
+			section(u"Давно не читаете"_q);
+			AddHint(box, u"Каналы и группы, где больше 100 непрочитанных или 3 месяца тишины. "
+				u"Свои (где вы создатель или админ) и закреплённые сюда не попадают. "
+				u"Снимите галочку с того, что оставить."_q);
+			for (const auto &[unread, channel] : dead) {
+				state->chosen.emplace(channel.get());
+				const auto check = box->addRow(object_ptr<Ui::Checkbox>(
+					box,
+					channel->name()
+						+ (channel->isBroadcast() ? u" · канал"_q : u" · группа"_q)
+						+ (unread ? (u" · "_q + QString::number(unread)) : QString()),
+					true));
+				const auto raw = channel.get();
+				check->checkedChanges() | rpl::on_next([=](bool checked) {
+					if (state->running) {
+						return;
+					} else if (checked) {
+						state->chosen.emplace(raw);
+					} else {
+						state->chosen.remove(raw);
+					}
+					updateButton();
+				}, check->lifetime());
+			}
+		} else {
+			AddHint(box, u"Давно заброшенных каналов и групп нет — чистить нечего."_q);
+		}
+		const auto status = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			QString(),
+			st::boxDividerLabel));
+		updateButton();
+
+		state->step = [=] {
+			if (!state->running) {
+				return;
+			} else if (state->done >= int(state->queue.size())) {
+				state->running = false;
+				status->setText(u"Готово: вышли из "_q
+					+ QString::number(state->done)
+					+ u". Публичные каналы можно вернуть поиском."_q);
+				state->chosen.clear();
+				updateButton();
+				return;
+			}
+			const auto channel = state->queue[state->done++];
+			session->api().leaveChannel(channel);
+			status->setText(u"Выхожу: "_q
+				+ QString::number(state->done)
+				+ u" из "_q
+				+ QString::number(state->queue.size())
+				+ u" · "_q
+				+ channel->name());
+			base::call_delayed(3000, box, [=] { state->step(); });
+		};
+		box->addButton(state->button.value(), [=] {
+			if (state->running) {
+				state->running = false;
+				status->setText(u"Остановлено: вышли из "_q
+					+ QString::number(state->done)
+					+ u"."_q);
+				updateButton();
+				return;
+			} else if (state->chosen.empty()) {
+				box->closeBox();
+				return;
+			}
+			const auto count = int(state->chosen.size());
+			controller->show(Ui::MakeConfirmBox({
+				.text = u"Выйти из "_q
+					+ QString::number(count)
+					+ u" каналов и групп? По одному раз в 3 секунды, можно остановить."_q,
+				.confirmed = [=](Fn<void()> close) {
+					close();
+					state->queue.clear();
+					for (const auto &[unread, channel] : dead) {
+						if (state->chosen.contains(channel.get())) {
+							state->queue.push_back(channel);
+						}
+					}
+					state->done = 0;
+					state->running = true;
+					updateButton();
+					state->step();
+				},
+				.confirmText = rpl::single(u"Выйти"_q),
+			}));
+		});
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+	}));
+}
+
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(rpl::single(u"Настройки Плюма"_q));
+		const auto session = &controller->session();
 		const auto section = [=](const QString &title) {
 			box->addRow(
 				object_ptr<Ui::FlatLabel>(box, title, st::defaultSubsectionTitle),
 				st::defaultSubsectionTitlePadding);
 		};
 
-		section(u"Уведомления"_q);
-		const auto muteAll = box->addRow(object_ptr<Ui::Checkbox>(
-			box,
-			u"Выключить все уведомления"_q,
-			MuteAll()));
-		muteAll->checkedChanges() | rpl::on_next([=](bool checked) {
-			SetMuteAll(controller, checked);
+		AddHint(box, u"Одни на телефоне, ПК и Mac: переключили здесь — через пару минут так же везде "
+			u"(кроме VPN и аккаунтов)."_q);
+		AddLink(box, u"Сводка и чистка"_q)->setClickedCallback([=] {
+			ShowSummaryBox(controller);
+		});
+
+		section(u"Тишина"_q);
+		const auto ghost = AddToggle(box, u"Невидимка"_q, GhostValue());
+		ghost->toggledChanges() | rpl::filter([](bool on) {
+			return on != GhostActive();
+		}) | rpl::on_next([=](bool on) {
+			SetGhost(controller, on);
+		}, ghost->lifetime());
+		AddHint(box, u"Для всех вы «не в сети», без «печатает…»."_q);
+		const auto focus = AddToggle(box, u"Фокус"_q, FocusValue());
+		focus->toggledChanges() | rpl::filter([](bool on) {
+			return on != FocusActive();
+		}) | rpl::on_next([=](bool on) {
+			SetFocus(controller, on);
+		}, focus->lifetime());
+		AddLink(box, u"Чаты фокуса: "_q + QString::number(Focus().chats.size()))->setClickedCallback([=] {
+			ShowFocusBox(controller);
+		});
+		const auto muteAll = AddToggle(box, u"Выключить все уведомления"_q, MuteAllValue());
+		muteAll->toggledChanges() | rpl::filter([](bool on) {
+			return on != MuteAll();
+		}) | rpl::on_next([=](bool on) {
+			SetMuteAll(controller, on);
 		}, muteAll->lifetime());
-		MuteAllValue() | rpl::on_next([=](bool on) {
-			muteAll->setChecked(on);
-		}, muteAll->lifetime());
-		box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			u"Ни всплывающих окон, ни звуков от чатов, групп и каналов. "
-			u"Сообщения приходят как обычно. Быстро — в меню ☰."_q,
-			st::boxDividerLabel));
+		const auto quiet = AddToggle(box, u"Тихие группы"_q, rpl::single(QuietGroups()));
+		quiet->toggledChanges() | rpl::on_next([](bool on) {
+			SetQuietGroups(on);
+		}, quiet->lifetime());
+		AddHint(box, u"Группы, где у вас больше 30 непрочитанных, не присылают уведомлений — "
+			u"кроме упоминаний и ответов вам."_q);
+
+		section(u"Список чатов"_q);
+		const auto stories = AddToggle(box, u"Скрыть истории"_q, rpl::single(HideStories()));
+		stories->toggledChanges() | rpl::on_next([](bool on) {
+			SetState(u"hideStories"_q, on);
+		}, stories->lifetime());
+		const auto recent = AddToggle(box, u"Скрыть недавние в поиске"_q, rpl::single(HideRecentSearch()));
+		recent->toggledChanges() | rpl::on_next([](bool on) {
+			SetState(u"hideRecentSearch"_q, on);
+		}, recent->lifetime());
+
+		section(u"Архив"_q);
+		const auto junk = AddToggle(box, u"Без чужих каналов и открытых групп"_q, rpl::single(HideArchiveJunkFlag()));
+		junk->toggledChanges() | rpl::on_next([=](bool on) {
+			SetHideArchiveJunk(session, on);
+		}, junk->lifetime());
+		const auto bots = AddToggle(box, u"Без чужих ботов"_q, rpl::single(HideArchiveBotsFlag()));
+		bots->toggledChanges() | rpl::on_next([=](bool on) {
+			SetHideArchiveBots(session, on);
+		}, bots->lifetime());
+		AddHint(box, u"Свои каналы и боты, закреплённое и личные чаты остаются."_q);
 
 		section(u"Помощник"_q);
-		box->addRow(object_ptr<Ui::LinkButton>(
-			box,
-			u"Открыть помощника (Ctrl+T)"_q))->setClickedCallback([=] {
+		AddLink(box, u"Открыть помощника (Ctrl+T)"_q)->setClickedCallback([=] {
 			box->closeBox();
 			ShowAssistant(controller);
 		});
-		const auto taktOpen = box->addRow(object_ptr<Ui::Checkbox>(
+		const auto taktOpen = AddToggle(
 			box,
-			u"Открывать помощника при запуске Плюма"_q,
-			ReadState().value(u"taktOpen"_q).toBool(true)));
-		taktOpen->checkedChanges() | rpl::on_next([](bool checked) {
-			SetState(u"taktOpen"_q, checked);
+			u"Открывать при запуске Плюма"_q,
+			rpl::single(ReadState().value(u"taktOpen"_q).toBool(true)));
+		taktOpen->toggledChanges() | rpl::on_next([](bool on) {
+			SetState(u"taktOpen"_q, on);
 		}, taktOpen->lifetime());
-		const auto hideBot = box->addRow(object_ptr<Ui::Checkbox>(
-			box,
-			u"Спрятать бота Такт"_q,
-			HideTaktBot()));
-		hideBot->checkedChanges() | rpl::on_next([=](bool checked) {
-			SetHideTaktBot(&controller->session(), checked);
+		const auto hideBot = AddToggle(box, u"Спрятать бота Такт"_q, rpl::single(HideTaktBot()));
+		hideBot->toggledChanges() | rpl::on_next([=](bool on) {
+			SetHideTaktBot(&controller->session(), on);
 		}, hideBot->lifetime());
-		box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			u"Чат с @takt52_bot не виден в списке и не присылает уведомлений — "
-			u"всё с ним делает Помощник. Сам бот работает и отвечает людям, как раньше."_q,
-			st::boxDividerLabel));
-
-		section(u"Невидимка"_q);
-		const auto ghost = box->addRow(object_ptr<Ui::Checkbox>(
-			box,
-			u"Режим невидимки"_q,
-			GhostActive()));
-		ghost->checkedChanges() | rpl::on_next([=](bool checked) {
-			SetGhost(controller, checked);
-		}, ghost->lifetime());
-		GhostValue() | rpl::on_next([=](bool on) {
-			ghost->setChecked(on);
-		}, ghost->lifetime());
-		box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			u"Для всех вы «не в сети»: Плюм не сообщает, что вы онлайн, «Время захода» — «Никто», "
-			u"собеседники не видят «печатает…». Чаты и уведомления — как обычно. "
-			u"Выключите — время захода вернётся как было. Быстро — в меню ☰."_q,
-			st::boxDividerLabel));
-
-		section(u"Фокус"_q);
-		box->addRow(object_ptr<Ui::LinkButton>(
-			box,
-			FocusActive()
-				? u"Фокус-режим: включён — настроить"_q
-				: u"Фокус-режим: выключен — настроить"_q))->setClickedCallback([=] {
-			ShowFocusBox(controller);
-		});
+		AddHint(box, u"Чат с @takt52_bot не виден в списке и не присылает уведомлений — "
+			u"всё с ним делает Помощник. Сам бот работает и отвечает людям, как раньше."_q);
 
 		section(u"Аккаунты"_q);
 		for (const auto &account : Core::App().domain().orderedAccounts()) {
 			if (!account->sessionExists()) {
 				continue;
 			}
-			const auto hide = box->addRow(object_ptr<Ui::Checkbox>(
+			const auto hide = AddToggle(
 				box,
 				u"Скрыть: "_q + AccountTitle(account),
-				AccountHidden(account)));
-			hide->checkedChanges() | rpl::on_next([=](bool checked) {
-				SetAccountHidden(account, checked);
+				rpl::single(AccountHidden(account)));
+			hide->toggledChanges() | rpl::on_next([=](bool on) {
+				SetAccountHidden(account, on);
 			}, hide->lifetime());
 		}
-		box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			u"В Плюме можно до 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». "
-			u"Скрытые не видны в списке аккаунтов (кроме открытого), не присылают "
-			u"уведомлений и не добавляют непрочитанных; открыть — «Скрытые аккаунты» "
-			u"под списком. Все ваши аккаунты со всех устройств — plume.amdiveev.ru/accounts."_q,
-			st::boxDividerLabel));
+		AddHint(box, u"До 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». Скрытые не видны в списке "
+			u"(кроме открытого), без уведомлений и непрочитанных; открыть — «Скрытые аккаунты» под списком. "
+			u"Все аккаунты со всех устройств — plume.amdiveev.ru/accounts."_q);
 
 		section(u"VPN StealthSurf"_q);
 		box->addRow(object_ptr<Ui::FlatLabel>(
@@ -1413,10 +1914,10 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			st::defaultInputField,
 			rpl::single(u"Ссылка на подписку"_q),
 			VpnUrl()));
-		const auto enabled = box->addRow(object_ptr<Ui::Checkbox>(
+		const auto enabled = AddToggle(
 			box,
 			u"Плюм через VPN"_q,
-			VpnEnabled()));
+			rpl::single(VpnEnabled()));
 		const auto list = Parse(ReadSubscription());
 		const auto status = box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
@@ -1449,28 +1950,6 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				}));
 			});
 		}
-		section(u"Лёгкий режим"_q);
-		const auto stories = box->addRow(object_ptr<Ui::Checkbox>(
-			box,
-			u"Скрыть истории (после перезапуска)"_q,
-			HideStories()));
-		stories->checkedChanges() | rpl::on_next([](bool checked) {
-			SetState(u"hideStories"_q, checked);
-		}, stories->lifetime());
-		const auto recent = box->addRow(object_ptr<Ui::Checkbox>(
-			box,
-			u"Скрыть недавние в поиске"_q,
-			HideRecentSearch()));
-		recent->checkedChanges() | rpl::on_next([](bool checked) {
-			SetState(u"hideRecentSearch"_q, checked);
-		}, recent->lifetime());
-		const auto junk = box->addRow(object_ptr<Ui::Checkbox>(
-			box,
-			u"Скрыть каналы и открытые группы в архиве"_q,
-			HideArchiveJunk()));
-		junk->checkedChanges() | rpl::on_next([=](bool checked) {
-			SetHideArchiveJunk(&controller->session(), checked);
-		}, junk->lifetime());
 		section(u"Обновления"_q);
 		box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
@@ -1484,7 +1963,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		});
 		box->addButton(rpl::single(u"Сохранить"_q), [=] {
 			const auto link = url->getLastText().trimmed();
-			const auto on = enabled->checked() && !link.isEmpty();
+			const auto on = enabled->toggled() && !link.isEmpty();
 			const auto changed = (link != VpnUrl());
 			SetState(u"vpnUrl"_q, link);
 			SetState(u"vpnEnabled"_q, on);

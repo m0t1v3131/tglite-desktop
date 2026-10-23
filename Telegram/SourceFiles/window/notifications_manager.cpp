@@ -320,6 +320,7 @@ System::SkipState System::skipNotification(
 		|| TgLite::MuteAll() // Плюм: все уведомления выключены
 		|| TgLite::TaktBotHidden(item->history()) // Плюм: бот Такт спрятан
 		|| TgLite::FocusHidden(item->history()) // Плюм: фокус-режим
+		|| (TgLite::QuietGroup(item->history()) && !item->mentionsMe()) // Плюм: тихая группа
 		|| TgLite::AccountHidden(&item->history()->session().account()) // Плюм: скрытый аккаунт
 		|| !thread->currentNotification()
 		|| (messageType && item->skipNotification())

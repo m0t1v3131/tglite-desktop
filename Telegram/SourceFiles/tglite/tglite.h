@@ -5,6 +5,8 @@ Licensed under GNU GPL v. 3.
 */
 #pragma once
 
+#include <QtCore/QJsonObject>
+
 class History;
 
 namespace Main {
@@ -19,7 +21,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102317;
+inline constexpr auto kBuild = 26102318;
 
 void Start();
 void Stop();
@@ -33,6 +35,21 @@ void SetHideArchiveJunk(not_null<Main::Session*> session, bool enabled);
 [[nodiscard]] bool HideTaktBot();
 [[nodiscard]] bool TaktBotHidden(not_null<const History*> history);
 void SetHideTaktBot(not_null<Main::Session*> session, bool enabled);
+// Чужие боты в архиве тоже не показываются (по умолчанию да; свои и бот Такт остаются).
+[[nodiscard]] bool HideArchiveBots();
+void SetHideArchiveBots(not_null<Main::Session*> session, bool enabled);
+// Тихие группы: больше 30 непрочитанных, вы не админ — без уведомлений, кроме упоминаний (по умолчанию да).
+[[nodiscard]] bool QuietGroups();
+[[nodiscard]] bool QuietGroup(not_null<const History*> history);
+void SetQuietGroups(bool enabled);
+// Сводка: непрочитанные, кто шумит, что спрятано, и выход из заброшенных каналов и групп.
+void ShowSummaryBox(not_null<Window::SessionController*> controller);
+
+// Общие настройки на телефоне, ПК и Mac (plume.amdiveev.ru/api/settings/<id>, синхронизация — tglite_ai.cpp).
+[[nodiscard]] QJsonObject SyncedSettings();
+[[nodiscard]] qint64 SettingsUpdated();
+void SetSettingsUpdated(qint64 updated);
+bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated);
 void ShowSettingsBox(not_null<Window::SessionController*> controller);
 
 // Фокус-режим: для всех «не в сети», выбранные личные чаты спрятаны из списка и без уведомлений.
