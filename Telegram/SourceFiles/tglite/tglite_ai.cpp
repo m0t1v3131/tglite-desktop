@@ -54,6 +54,7 @@ Licensed under GNU GPL v. 3.
 #include <QtCore/QSysInfo>
 #include <QtCore/QPointer>
 #include <QtCore/QTimer>
+#include <QtGui/QDesktopServices>
 #include <QtGui/QPainter>
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
@@ -645,37 +646,48 @@ private:
 			});
 	}
 
+	// Подтверждение действия помощника — карточкой прямо в переписке (текст + «Выполнить» / «Отмена»),
+	// а не всплывающим окном. Помощник ждёт, пока владелец не нажмёт; панель закрыта — откроется сама.
 	void confirm(const QString &text, Fn<void()> yes, Fn<void()> no) {
-		if (_window && _window->isVisible()) {
-			// Окно Takt открыто — спрашиваем в нём, а не в главном окне за ним.
-			const auto box = new QMessageBox(
-				QMessageBox::Question,
-				u"Помощник"_q,
-				text,
-				QMessageBox::NoButton,
-				_window);
-			box->setAttribute(Qt::WA_DeleteOnClose);
-			const auto ok = box->addButton(u"Выполнить"_q, QMessageBox::AcceptRole);
-			box->addButton(u"Отмена"_q, QMessageBox::RejectRole);
-			QObject::connect(box, &QMessageBox::finished, [=] {
-				if (box->clickedButton() == ok) {
-					yes();
-				} else {
-					no();
-				}
-			});
-			box->open();
-			return;
+		if (const auto old = base::take(_askNo)) {
+			_askYes = nullptr;
+			old();
 		}
-		_controller->show(Ui::MakeConfirmBox({
-			.text = text,
-			.confirmed = [=](Fn<void()> close) { close(); yes(); },
-			.cancelled = [=](Fn<void()> close) { close(); no(); },
-			.confirmText = u"Выполнить"_q,
-			.cancelText = u"Отмена"_q,
-		}));
+		_askText = text;
+		_askYes = std::move(yes);
+		_askNo = std::move(no);
+		if (!_window || !_window->isVisible() || !_changed) {
+			showWindow();
+		}
+		render();
 	}
 
+public:
+	void answer(bool yes) {
+		const auto run = yes ? base::take(_askYes) : base::take(_askNo);
+		if (!run) {
+			return;
+		}
+		_askYes = nullptr;
+		_askNo = nullptr;
+		_lines.push_back({
+			Kind::Bot,
+			base::take(_askText) + (yes ? u"\n\n✓ Выполняю"_q : u"\n\n✕ Отменено"_q),
+		});
+		save();
+		render();
+		run();
+	}
+
+	[[nodiscard]] bool asking() const {
+		return _askYes != nullptr;
+	}
+
+	[[nodiscard]] const QString &askText() const {
+		return _askText;
+	}
+
+private:
 	void run(
 			const QString &name,
 			const QJsonObject &input,
@@ -1430,6 +1442,9 @@ private:
 	QString _chatMsgText;
 	Fn<void()> _chatChanged;
 	QString _lastText;
+	QString _askText;
+	Fn<void()> _askYes;
+	Fn<void()> _askNo;
 	Fn<void(QString, bool)> _onDone;
 	int _steps = 0;
 	bool _busy = false;
@@ -1598,7 +1613,20 @@ void Assistant::showWindow() {
 	layout->addWidget(chatBar);
 
 	const auto feed = new QTextBrowser(host);
-	feed->setOpenExternalLinks(true);
+	// ссылки «plume:yes» / «plume:no» — кнопки подтверждения в переписке, остальные открываются в браузере
+	feed->setOpenLinks(false);
+	QObject::connect(feed, &QTextBrowser::anchorClicked, [=](const QUrl &url) {
+		const auto link = url.toString();
+		if (link == u"plume:yes"_q || link == u"plume:no"_q) {
+			QTimer::singleShot(0, [=] {
+				if (weak) {
+					answer(link == u"plume:yes"_q);
+				}
+			});
+		} else {
+			QDesktopServices::openUrl(url);
+		}
+	});
 	feed->setFrameShape(QFrame::NoFrame);
 	layout->addWidget(feed, 1);
 
@@ -1794,7 +1822,18 @@ void Assistant::showWindow() {
 				break;
 			}
 		}
-		if (_busy) {
+		if (asking()) {
+			html += u"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:6px 0\"><tr>"
+				"<td align=\"left\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#ffffff\" style=\"color:#1b1f24\">"
+				"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Помощник · подтвердите</span><br>"_q
+				+ BubbleHtml(askText())
+				+ u"<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:10px\"><tr>"
+					"<td bgcolor=\"#3a7bd5\" style=\"padding:7px 16px\"><a href=\"plume:yes\" style=\"color:#ffffff;text-decoration:none;font-weight:600\">Выполнить</a></td>"
+					"<td width=\"8\"></td>"
+					"<td bgcolor=\"#e6edf7\" style=\"padding:7px 16px\"><a href=\"plume:no\" style=\"color:#2a5ea8;text-decoration:none;font-weight:600\">Отмена</a></td>"
+					"</tr></table>"
+					"</td></tr></table></td><td width=\"12%\"></td></tr></table>"_q;
+		} else if (_busy) {
 			html += u"<p style=\"color:#8a94a0;font-size:12px;margin:6px 10px\"><i>Помощник печатает…</i></p>"_q;
 		}
 		html += u"</body></html>"_q;
