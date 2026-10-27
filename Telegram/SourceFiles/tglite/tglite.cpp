@@ -526,6 +526,31 @@ void FetchSubscription(Fn<void(QString error)> done) {
 
 // ---------- обновления ----------
 
+// Найденное обновление ждёт, пока владелец сам нажмёт «Обновить» (просьба владельца 28.10: «чтобы накапливались»).
+struct PendingUpdate {
+	int build = 0;
+	QString url;
+	QStringList notes;
+};
+
+PendingUpdate &Pending() {
+	static auto result = PendingUpdate();
+	return result;
+}
+
+rpl::variable<bool> &UpdateReadyVariable() {
+	static auto result = rpl::variable<bool>(false);
+	return result;
+}
+
+QString PendingNotesText() {
+	auto result = QString();
+	for (const auto &note : Pending().notes) {
+		result += (result.isEmpty() ? u"• "_q : u"\n• "_q) + note;
+	}
+	return result;
+}
+
 void InstallUpdate(const QString &url) {
 	static bool updating = false;
 	if (updating) {
@@ -749,11 +774,11 @@ public:
 		setStyleSheet(u"QFrame#plumeUpdateCurtain { background: #27406b; border-radius: 12px; } QLabel { color: white; } QPushButton { background: white; color: #27406b; border: none; border-radius: 6px; padding: 8px 14px; }"_q);
 		auto layout = new QVBoxLayout(this);
 		layout->setContentsMargins(18, 14, 18, 14);
-		auto title = new QLabel(u"Доступно обновление Плюма"_q, this);
+		auto title = new QLabel(u"Накопились обновления Плюма"_q, this);
 		layout->addWidget(title);
 		auto details = new QLabel(notes.isEmpty()
 			? u"Новая версия готова к установке. Чаты и настройки сохранятся."_q
-			: notes.left(600), this);
+			: notes.left(1500), this);
 		details->setWordWrap(true);
 		layout->addWidget(details);
 		auto buttons = new QHBoxLayout();
@@ -1448,6 +1473,14 @@ bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
 	return true;
 }
 
+bool UpdateReady() {
+	return UpdateReadyVariable().current();
+}
+
+rpl::producer<bool> UpdateReadyValue() {
+	return UpdateReadyVariable().value();
+}
+
 void CheckUpdates(bool manual) {
 	static auto checking = false;
 	if (checking) return;
@@ -1471,11 +1504,41 @@ void CheckUpdates(bool manual) {
 				window->showToast(u"Не удалось проверить обновления"_q);
 			}
 		} else if (build > kBuild) {
-			OfferUpdate(
-				platform.value(u"url"_q).toString(),
-				info.value(u"notes"_q).toString());
-		} else if (manual && window) {
-			window->showToast(u"У вас последняя версия Плюма"_q);
+			// Всё, что вышло после этой сборки: history [{"win"|"mac": сборка, "notes"}] от старых к новым.
+#ifdef Q_OS_WIN
+			const auto key = u"win"_q;
+#else // Q_OS_WIN
+			const auto key = u"mac"_q;
+#endif // Q_OS_WIN
+			auto notes = QStringList();
+			for (const auto &value : info.value(u"history"_q).toArray()) {
+				const auto entry = value.toObject();
+				const auto note = entry.value(u"notes"_q).toString().trimmed();
+				if (entry.value(key).toInt() > kBuild
+					&& !note.isEmpty()
+					&& !notes.contains(note)) {
+					notes.push_back(note);
+				}
+			}
+			const auto last = info.value(u"notes"_q).toString().trimmed();
+			if (notes.isEmpty() && !last.isEmpty()) {
+				notes.push_back(last);
+			}
+			Pending() = PendingUpdate{
+				.build = build,
+				.url = platform.value(u"url"_q).toString(),
+				.notes = notes,
+			};
+			UpdateReadyVariable() = true;
+			if (manual) {
+				OfferUpdate(Pending().url, PendingNotesText());
+			}
+		} else {
+			Pending() = PendingUpdate();
+			UpdateReadyVariable() = false;
+			if (manual && window) {
+				window->showToast(u"У вас последняя версия Плюма"_q);
+			}
 		}
 	});
 }
@@ -2212,16 +2275,35 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			});
 		}
 		section(u"Обновления"_q);
-		box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			u"Версия "_q + QString::number(kBuild)
-				+ u". Плюм сам проверяет обновления при запуске и раз в 3 часа."_q,
-			st::boxDividerLabel));
-		box->addRow(object_ptr<Ui::LinkButton>(
-			box,
-			u"Проверить обновления"_q))->setClickedCallback([] {
-			CheckUpdates(true);
-		});
+		if (Pending().build > kBuild) {
+			box->addRow(object_ptr<Ui::FlatLabel>(
+				box,
+				u"Версия "_q + QString::number(kBuild)
+					+ u". Накопились обновления ("_q
+					+ QString::number(std::max(int(Pending().notes.size()), 1))
+					+ u"):\n"_q
+					+ (Pending().notes.isEmpty() ? u"• новая версия"_q : PendingNotesText()),
+				st::boxDividerLabel));
+			const auto updateUrl = Pending().url;
+			box->addRow(object_ptr<Ui::LinkButton>(
+				box,
+				u"Обновить сейчас"_q))->setClickedCallback([=] {
+				box->closeBox();
+				InstallUpdate(updateUrl);
+			});
+		} else {
+			box->addRow(object_ptr<Ui::FlatLabel>(
+				box,
+				u"Версия "_q + QString::number(kBuild)
+					+ u". Обновления копятся и сами не ставятся: когда появятся, на шестерёнке будет точка, "
+					u"а здесь — список изменений и кнопка «Обновить сейчас»."_q,
+				st::boxDividerLabel));
+			box->addRow(object_ptr<Ui::LinkButton>(
+				box,
+				u"Проверить обновления"_q))->setClickedCallback([] {
+				CheckUpdates(true);
+			});
+		}
 		box->addButton(rpl::single(u"Сохранить"_q), [=] {
 			const auto link = url->getLastText().trimmed();
 			const auto on = enabled->toggled() && !link.isEmpty();

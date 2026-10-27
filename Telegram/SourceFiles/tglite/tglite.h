@@ -6,6 +6,7 @@ Licensed under GNU GPL v. 3.
 #pragma once
 
 #include <QtCore/QJsonObject>
+#include <rpl/producer.h>
 
 class History;
 
@@ -21,11 +22,14 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102801;
+inline constexpr auto kBuild = 26102802;
 
 void Start();
 void Stop();
 void CheckUpdates(bool manual);
+// Обновления копятся: сами не ставятся и не всплывают, только точка на шестерёнке и список в Настройках Плюма.
+[[nodiscard]] bool UpdateReady();
+[[nodiscard]] rpl::producer<bool> UpdateReadyValue();
 [[nodiscard]] bool HideStories(); // по умолчанию да, меняется в окне Plume, действует после перезапуска
 [[nodiscard]] bool HideRecentSearch(); // по умолчанию да: в пустом поиске нет «Недавних» и частых собеседников
 // Архив без мусора: чужие каналы и открытые группы в архиве не показываются (по умолчанию да).

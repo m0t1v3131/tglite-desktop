@@ -2503,7 +2503,12 @@ public:
 	explicit PlumeSettingsButton(QWidget *parent) : AbstractButton(parent) {
 		setCursor(style::cur_pointer);
 		resize(st::dialogsLock.height, st::dialogsLock.height);
-		setToolTip(u"Настройки Плюма"_q);
+		UpdateReadyValue() | rpl::on_next([=](bool ready) {
+			setToolTip(ready
+				? u"Настройки Плюма · накопились обновления"_q
+				: u"Настройки Плюма"_q);
+			update();
+		}, lifetime());
 	}
 
 protected:
@@ -2517,6 +2522,17 @@ protected:
 			p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
 		}
 		st::menuIconSettings.paintInCenter(p, rect());
+		if (UpdateReady()) {
+			// Точка «накопились обновления» — тихо, без окон.
+			PainterHighQualityEnabler hq(p);
+			const auto d = style::ConvertScale(8);
+			const auto icon = st::menuIconSettings.size();
+			const auto x = (width() + icon.width()) / 2 - d + style::ConvertScale(1);
+			const auto y = (height() - icon.height()) / 2 - style::ConvertScale(1);
+			p.setPen(QPen(st::dialogsBg->c, style::ConvertScale(1.5)));
+			p.setBrush(st::activeButtonBg);
+			p.drawEllipse(QRectF(x, y, d, d));
+		}
 	}
 
 	void onStateChanged(State was, StateChangeSource source) override {
