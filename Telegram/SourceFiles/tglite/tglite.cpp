@@ -24,6 +24,8 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "data/data_thread.h"
 #include "data/data_user.h"
 #include "history/history.h"
+#include "history/history_item.h"
+#include "history/history_unread_things.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
@@ -46,6 +48,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "window/notifications_manager.h"
 #include "mainwindow.h"
 #include "window/window_session_controller.h"
+#include "window/window_session_controller_link_info.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_settings.h"
@@ -154,6 +157,7 @@ bool IsSyncedKey(const QString &key) {
 		u"focusChats"_q,
 		u"hideTaktBot"_q,
 		u"hideMayakBot"_q,
+		u"noisyDigest"_q,
 	};
 	return keys.contains(key);
 }
@@ -1037,6 +1041,55 @@ void SetQuietGroups(bool enabled) {
 	SetState(u"quietGroups"_q, enabled);
 }
 
+// «Сводка»: шумные чаты не видны в списке, их новое пересказывает бот Плюм (сервер, 9:00 и 19:00).
+constexpr auto kPlumeBotId = uint64(8629329150); // @plume_organizer_bot — присылает сводки
+constexpr auto kWaitingSeconds = 48 * 3600; // последнее слово за собеседником — ждёт вас 2 дня
+
+bool &NoisyDigestFlag() {
+	static auto result = ReadState().value(u"noisyDigest"_q).toBool(true);
+	return result;
+}
+
+bool NoisyDigest() {
+	return NoisyDigestFlag();
+}
+
+// Шумный чат: чужой канал или группа без звука, где вы не создатель и не админ. Закреплённые — не шумные.
+bool NoisyHidden(not_null<const History*> history) {
+	if (!NoisyDigestFlag() || history->isPinnedDialog(FilterId())) {
+		return false;
+	} else if (const auto channel = history->peer->asChannel()) {
+		return !channel->isCommunity()
+			&& !channel->amCreator()
+			&& !channel->hasAdminRights()
+			&& (channel->isBroadcast() || history->muted());
+	} else if (const auto chat = history->peer->asChat()) {
+		return !chat->amCreator() && !chat->hasAdminRights() && history->muted();
+	}
+	return false;
+}
+
+void SetNoisyDigest(not_null<Main::Session*> session, bool enabled) {
+	if (NoisyDigestFlag() == enabled) {
+		return;
+	}
+	NoisyDigestFlag() = enabled;
+	SetState(u"noisyDigest"_q, enabled);
+	const auto refresh = [=](auto peer) {
+		if (const auto history = session->data().historyLoaded(peer->id)) {
+			history->updateChatListExistence();
+		}
+	};
+	session->data().enumerateGroups(refresh);
+	session->data().enumerateBroadcasts(refresh);
+}
+
+void OpenDigestChat(not_null<Window::SessionController*> controller) {
+	controller->showPeerByLink(Window::PeerByLinkInfo{
+		.usernameOrId = u"plume_organizer_bot"_q,
+	});
+}
+
 // Бот Такт спрятан: всё с ним — через Помощника, а сам бот отвечает людям на сервере.
 constexpr auto kHiddenTaktBotId = uint64(8909004776); // @takt52_bot
 
@@ -1307,6 +1360,7 @@ QJsonObject SyncedSettings() {
 		{ u"focusChats"_q, chats },
 		{ u"hideTaktBot"_q, HideTaktBotFlag() },
 		{ u"hideMayakBot"_q, HideMayakBotFlag() },
+		{ u"noisyDigest"_q, NoisyDigestFlag() },
 	};
 }
 
@@ -1353,6 +1407,9 @@ bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
 	});
 	flag(u"quietGroups"_q, QuietGroupsFlag(), [](bool v) {
 		SetQuietGroups(v);
+	});
+	flag(u"noisyDigest"_q, NoisyDigestFlag(), [&](bool v) {
+		SetNoisyDigest(session, v);
 	});
 	flag(u"muteAll"_q, MuteAll(), [&](bool v) {
 		SetMuteAll(controller, v);
@@ -1601,7 +1658,109 @@ QFont StatFont(int size) {
 	return result;
 }
 
+// Ждёт вас: личный чат с непрочитанным или где последнее слово за собеседником (до 2 дней),
+// в группе или канале — упоминание вам; плюс отмеченные «непрочитанными» и сводки бота Плюм.
+bool Waiting(not_null<History*> history, TimeId now) {
+	if (FocusHidden(history) || TaktBotHidden(history)) {
+		return false;
+	} else if (history->unreadMark() || history->unreadMentions().has()) {
+		return true;
+	}
+	const auto user = history->peer->asUser();
+	if (!user
+		|| user->isSelf()
+		|| user->isInaccessible()
+		|| user->isServiceUser()
+		|| user->isRepliesChat()
+		|| user->isVerifyCodes()
+		|| (user->isBot() && user->id.value != kPlumeBotId)) {
+		return false;
+	} else if (history->unreadCount() > 0) {
+		return true;
+	} else if (user->id.value == kPlumeBotId) {
+		return false;
+	}
+	const auto last = history->chatListMessage();
+	return last
+		&& !last->out()
+		&& !last->isService()
+		&& (last->date() > now - kWaitingSeconds);
+}
+
+QString WaitingWhen(TimeId date) {
+	const auto when = base::unixtime::parse(date);
+	const auto days = when.date().daysTo(QDate::currentDate());
+	return (days == 0)
+		? when.toString(u"HH:mm"_q)
+		: (days == 1)
+		? u"вчера"_q
+		: when.toString(u"dd.MM"_q);
+}
+
 } // namespace
+
+void ShowWaitingBox(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	const auto now = base::unixtime::now();
+	auto list = std::vector<not_null<History*>>();
+	const auto visit = [&](not_null<PeerData*> peer) {
+		if (const auto history = session->data().historyLoaded(peer)) {
+			if (Waiting(history, now)) {
+				list.push_back(history);
+			}
+		}
+	};
+	session->data().enumerateUsers([&](not_null<UserData*> user) {
+		visit(user);
+	});
+	session->data().enumerateGroups([&](not_null<PeerData*> peer) {
+		visit(peer);
+	});
+	session->data().enumerateBroadcasts([&](not_null<ChannelData*> channel) {
+		visit(channel);
+	});
+	ranges::sort(list, ranges::greater(), [](not_null<History*> history) {
+		return history->chatListTimeId();
+	});
+
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Ждут меня · "_q + QString::number(list.size())));
+		box->setWidth(st::boxWideWidth);
+		AddHint(box, u"Кто ждёт вашего ответа: личные с новым или где последнее слово за собеседником "
+			u"(за 2 дня), упоминания вам в группах, отмеченные непрочитанными, сводки бота Плюм. "
+			u"Из основного списка и архива. Ответили — человек уходит отсюда."_q);
+		if (list.empty()) {
+			AddHint(box, u"Сейчас никто не ждёт — можно выдохнуть."_q);
+		}
+		for (const auto &history : list) {
+			const auto last = history->chatListMessage();
+			const auto unread = history->unreadCount();
+			const auto mention = history->unreadMentions().has();
+			auto text = history->peer->name();
+			if (mention) {
+				text += u" · @ упоминание"_q;
+			} else if (unread > 0) {
+				text += u" · "_q + QString::number(unread);
+			}
+			if (last) {
+				text += u" · "_q + WaitingWhen(last->date());
+			}
+			const auto button = AddLink(box, text);
+			const auto preview = last
+				? last->notificationText().text.simplified()
+				: QString();
+			if (!preview.isEmpty()) {
+				AddHint(box, preview.size() > 140 ? preview.left(139) + u"…"_q : preview);
+			}
+			const auto peer = history->peer;
+			button->setClickedCallback([=] {
+				box->closeBox();
+				controller->showPeerHistory(peer);
+			});
+		}
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+	}));
+}
 
 void ShowSummaryBox(not_null<Window::SessionController*> controller) {
 	const auto session = &controller->session();
@@ -1874,6 +2033,33 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 
 		AddHint(box, u"Одни на телефоне, ПК и Mac: переключили здесь — через пару минут так же везде "
 			u"(кроме VPN и аккаунтов)."_q);
+
+		section(u"Ждут меня"_q);
+		AddLink(box, u"Ждут меня"_q)->setClickedCallback([=] {
+			box->closeBox();
+			ShowWaitingBox(controller);
+		});
+		AddHint(box, u"Только те, кто ждёт вашего ответа: личные с новым или где последнее слово за собеседником "
+			u"(за 2 дня), упоминания вам в группах. Из основного списка и архива. Ещё — ☰ → «Ждут меня»."_q);
+
+		section(u"Сводка"_q);
+		const auto noisy = AddToggle(box, u"Шумные чаты — в сводку"_q, rpl::single(NoisyDigest()));
+		noisy->toggledChanges() | rpl::on_next([=](bool on) {
+			SetNoisyDigest(session, on);
+		}, noisy->lifetime());
+		AddLink(box, u"Сводка сейчас"_q)->setClickedCallback([=] {
+			box->closeBox();
+			RequestDigest(controller);
+		});
+		AddLink(box, u"Все сводки — бот Плюм"_q)->setClickedCallback([=] {
+			box->closeBox();
+			OpenDigestChat(controller);
+		});
+		AddHint(box, u"Шумные чаты — чужие каналы и группы без звука (кроме закреплённых и ваших) — не видны в списке. "
+			u"В 9:00 и 19:00 бот Плюм присылает короткий пересказ их нового: что касается вас, что важного, "
+			u"ссылки на сообщения. Сами чаты остаются непрочитанными."_q);
+
+		section(u"Чистка"_q);
 		AddLink(box, u"Сводка и чистка"_q)->setClickedCallback([=] {
 			ShowSummaryBox(controller);
 		});

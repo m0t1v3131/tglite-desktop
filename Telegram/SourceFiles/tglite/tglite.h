@@ -21,7 +21,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102800;
+inline constexpr auto kBuild = 26102801;
 
 void Start();
 void Stop();
@@ -46,6 +46,16 @@ void SetHideArchiveBots(not_null<Main::Session*> session, bool enabled);
 [[nodiscard]] bool QuietGroups();
 [[nodiscard]] bool QuietGroup(not_null<const History*> history);
 void SetQuietGroups(bool enabled);
+// «Сводка»: шумные чаты (чужие каналы, группы без звука; не закреплённые, не ваши) не видны в списке,
+// их новое дважды в день пересказывает бот Плюм (по умолчанию да).
+[[nodiscard]] bool NoisyDigest();
+[[nodiscard]] bool NoisyHidden(not_null<const History*> history);
+void SetNoisyDigest(not_null<Main::Session*> session, bool enabled);
+// «Сводка сейчас»: сервер соберёт её (до пары минут) и пришлёт ботом Плюм; открывает чат с ботом.
+void RequestDigest(not_null<Window::SessionController*> controller);
+void OpenDigestChat(not_null<Window::SessionController*> controller);
+// «Ждут меня»: окно со списком тех, кто ждёт вашего ответа (из основного списка и архива).
+void ShowWaitingBox(not_null<Window::SessionController*> controller);
 // Сводка: непрочитанные, кто шумит, что спрятано, и выход из заброшенных каналов и групп.
 void ShowSummaryBox(not_null<Window::SessionController*> controller);
 

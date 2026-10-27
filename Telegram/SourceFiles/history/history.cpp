@@ -2455,6 +2455,9 @@ void History::setMuted(bool muted) {
 		peer,
 		Data::PeerUpdate::Flag::Notifications);
 	owner().chatsFilters().refreshHistory(this);
+	if (TgLite::NoisyDigest() && folderKnown()) {
+		updateChatListExistence(); // Плюм: группа без звука — шумная, со звуком — снова в списке
+	}
 	if (const auto forum = peer->forum()) {
 		owner().notifySettings().forumParentMuteUpdated(forum);
 	}
@@ -3475,6 +3478,8 @@ bool History::shouldBeInChatList() const {
 		return false; // Плюм: бот Такт спрятан — с ним работает Помощник
 	} else if (TgLite::ArchiveJunkHidden(this)) {
 		return false; // Плюм: в архиве без чужих каналов и открытых групп
+	} else if (TgLite::NoisyHidden(this)) {
+		return false; // Плюм: «Сводка» — шумные чаты пересказывает бот Плюм
 	} else if (peer->migrateTo() || !folderKnown()) {
 		return false;
 	} else if (const auto community = peer->asChannel()

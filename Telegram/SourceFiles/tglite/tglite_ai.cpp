@@ -3126,4 +3126,29 @@ void InstallReplySuggestions(
 	QObject::connect(field, &QObject::destroyed, panel, [=] { delete panel; });
 }
 
+void RequestDigest(not_null<Window::SessionController*> controller) {
+	const auto weak = base::make_weak(controller.get());
+	auto request = QNetworkRequest(QUrl(u"https://plume.amdiveev.ru/api/digest"_q));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+	request.setRawHeader("X-Lite-Key", AiKey().toUtf8());
+	const auto reply = Net()->post(request, QByteArray("{}"));
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		const auto strong = weak.get();
+		if (!strong) {
+			return;
+		}
+		const auto code = reply->attribute(
+			QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		if (code == 200 || code == 202) {
+			strong->showToast(u"Сводка собирается — через минуту-две её пришлёт бот Плюм"_q);
+			OpenDigestChat(strong);
+		} else {
+			strong->showToast(code
+				? (u"Сводка не запустилась: сервер ответил "_q + QString::number(code))
+				: u"Сводка не запустилась: нет связи с plume.amdiveev.ru"_q);
+		}
+	});
+}
+
 } // namespace TgLite

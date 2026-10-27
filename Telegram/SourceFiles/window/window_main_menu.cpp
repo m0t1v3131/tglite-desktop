@@ -778,6 +778,18 @@ void MainMenu::setupMenu() {
 		TgLite::ShowSettingsBox(controller);
 	});
 	addAction(
+		rpl::single(u"Ждут меня"_q),
+		{ &st::menuIconReply }
+	)->setClickedCallback([=] {
+		TgLite::ShowWaitingBox(controller);
+	});
+	addAction(
+		rpl::single(u"Сводка сейчас"_q),
+		{ &st::menuIconDiscussion }
+	)->setClickedCallback([=] {
+		TgLite::RequestDigest(controller);
+	});
+	addAction(
 		rpl::single(u"Сводка и чистка"_q),
 		{ &st::menuIconStats }
 	)->setClickedCallback([=] {
