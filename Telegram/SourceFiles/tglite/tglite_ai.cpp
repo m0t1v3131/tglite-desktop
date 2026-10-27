@@ -56,6 +56,9 @@ Licensed under GNU GPL v. 3.
 #include "styles/style_widgets.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
+#include "styles/palette.h"
+#include "ui/style/style_core.h"
+#include "ui/rp_widget.h"
 
 #include <QtCore/QDate>
 #include <QtCore/QSysInfo>
@@ -1594,6 +1597,80 @@ private:
 
 };
 
+// Цвета панели Помощника — из текущей темы Плюма (тёмной или светлой), а не свои светлые.
+[[nodiscard]] QColor SolidColor(const style::color &color) {
+	const auto c = color->c;
+	if (c.alpha() == 255) {
+		return c;
+	}
+	const auto bg = st::windowBg->c;
+	const auto a = c.alphaF();
+	return QColor::fromRgbF(
+		c.redF() * a + bg.redF() * (1. - a),
+		c.greenF() * a + bg.greenF() * (1. - a),
+		c.blueF() * a + bg.blueF() * (1. - a));
+}
+
+[[nodiscard]] QString Hex(const style::color &color) {
+	return SolidColor(color).name();
+}
+
+[[nodiscard]] QString Rgba(const style::color &color) {
+	const auto c = color->c;
+	return u"rgba(%1,%2,%3,%4)"_q
+		.arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
+}
+
+[[nodiscard]] QString AssistantStyleSheet() {
+	auto css = QString(u""
+		"QWidget { background: $bg; color: $fg; font-size: 14px; }"
+		"QTextBrowser { border: none; background: $feed; padding: 6px; }"
+		"QPlainTextEdit { border: 1px solid $border; border-radius: 10px; padding: 6px 8px; background: $bg; color: $fg; }"
+		"QPlainTextEdit:focus { border-color: $focus; }"
+		"QPushButton { border: 1px solid $border; border-radius: 14px; padding: 5px 10px; background: $bg; color: $link; }"
+		"QPushButton:hover { background: $lightOver; }"
+		"QPushButton#send { background: $accent; color: $accentFg; border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600; }"
+		"QPushButton#send:hover { background: $accentOver; }"
+		"QPushButton#reset { border: none; color: $sub; padding: 4px 6px; }"
+		"QPushButton#reset:hover { color: $link; background: transparent; }"
+		"QLabel#title { font-size: 18px; font-weight: 700; }"
+		"QPushButton#head { border: none; color: $sub; padding: 4px 6px; font-size: 16px; }"
+		"QPushButton#head:hover { color: $link; background: transparent; }"
+		"QLabel#subtitle { color: $sub; font-size: 12px; }"
+		"QWidget#chatBar { background: $over; border-bottom: 1px solid $line; }"
+		"QWidget#chatBar QWidget { background: transparent; }"
+		"QWidget#chatBar QPushButton { background: $bg; }"
+		"QWidget#chatBar QPushButton#head { background: transparent; }"
+		"QLabel#chatTitle { font-weight: 600; }"
+		"QLabel#chatMsg { color: $sub; font-size: 12px; }"
+		"QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; border: none; }"
+		"QScrollBar::handle:vertical { background: $scroll; border-radius: 2px; min-height: 30px; }"
+		"QScrollBar::handle:vertical:hover { background: $scrollOver; }"
+		"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; border: none; background: none; }"
+		"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }"_q);
+	const auto values = std::vector<std::pair<QString, QString>>{
+		{ u"$bg"_q, Hex(st::windowBg) },
+		{ u"$fg"_q, Hex(st::windowFg) },
+		{ u"$feed"_q, Hex(st::boxDividerBg) },
+		{ u"$border"_q, Hex(st::inputBorderFg) },
+		{ u"$focus"_q, Hex(st::activeLineFg) },
+		{ u"$link"_q, Hex(st::lightButtonFg) },
+		{ u"$lightOver"_q, Hex(st::lightButtonBgOver) },
+		{ u"$accentFg"_q, Hex(st::activeButtonFg) },
+		{ u"$accentOver"_q, Hex(st::activeButtonBgOver) },
+		{ u"$accent"_q, Hex(st::activeButtonBg) },
+		{ u"$sub"_q, Hex(st::windowSubTextFg) },
+		{ u"$over"_q, Hex(st::windowBgOver) },
+		{ u"$line"_q, Hex(st::shadowFg) },
+		{ u"$scrollOver"_q, Rgba(st::scrollBarBgOver) },
+		{ u"$scroll"_q, Rgba(st::scrollBarBg) },
+	};
+	for (const auto &[key, value] : values) {
+		css.replace(key, value);
+	}
+	return css;
+}
+
 QString BubbleHtml(const QString &text) {
 	auto result = text.toHtmlEscaped();
 	static const auto bold = QRegularExpression(u"\\*\\*([^*\\n]+)\\*\\*"_q);
@@ -1648,31 +1725,13 @@ void Assistant::showWindow() {
 	if (_docked) {
 		const auto line = new QWidget(window);
 		line->setFixedWidth(1);
-		line->setStyleSheet(u"background: #dfe3e8;"_q);
+		line->setObjectName(u"plumeLine"_q);
+		line->setStyleSheet(u"background: %1;"_q.arg(Hex(st::shadowFg)));
 		outer->addWidget(line);
 	}
 	const auto host = new QWidget(window);
 	outer->addWidget(host, 1);
-	host->setStyleSheet(u""
-		"QWidget { background: #ffffff; color: #1b1f24; font-size: 14px; }"
-		"QTextBrowser { border: none; background: #f4f6f9; padding: 6px; }"
-		"QPlainTextEdit { border: 1px solid #d5dbe3; border-radius: 10px; padding: 6px 8px; background: #ffffff; }"
-		"QPlainTextEdit:focus { border-color: #3a7bd5; }"
-		"QPushButton { border: 1px solid #d5dbe3; border-radius: 14px; padding: 5px 10px; background: #ffffff; color: #2a5ea8; }"
-		"QPushButton:hover { background: #eef3fb; }"
-		"QPushButton#send { background: #3a7bd5; color: #ffffff; border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600; }"
-		"QPushButton#send:hover { background: #2f6bc0; }"
-		"QPushButton#reset { border: none; color: #7a8592; padding: 4px 6px; }"
-		"QLabel#title { font-size: 18px; font-weight: 700; }"
-		"QPushButton#head { border: none; color: #7a8592; padding: 4px 6px; font-size: 16px; }"
-		"QPushButton#head:hover { color: #2a5ea8; }"
-		"QLabel#subtitle { color: #7a8592; font-size: 12px; }"
-		"QWidget#chatBar { background: #eef3fb; border-bottom: 1px solid #dfe3e8; }"
-		"QWidget#chatBar QWidget { background: transparent; }"
-		"QWidget#chatBar QPushButton { background: #ffffff; }"
-		"QWidget#chatBar QPushButton#head { background: transparent; }"
-		"QLabel#chatTitle { font-weight: 600; }"
-		"QLabel#chatMsg { color: #5b6672; font-size: 12px; }"_q);
+	host->setStyleSheet(AssistantStyleSheet());
 
 	const auto weak = base::make_weak(this);
 	const auto layout = new QVBoxLayout(host);
@@ -1916,14 +1975,31 @@ void Assistant::showWindow() {
 		if (!feedAlive) {
 			return; // панель справа заняла другая вкладка (редактор темы) — рисовать некуда
 		}
-		auto html = QString(u"<html><body style=\"margin:4px\">"_q);
+		const auto bg = Hex(st::windowBg);
+		const auto fg = Hex(st::windowFg);
+		const auto accent = Hex(st::activeButtonBg);
+		const auto accentFg = Hex(st::activeButtonFg);
+		const auto name = Hex(st::windowActiveTextFg);
+		const auto sub = Hex(st::windowSubTextFg);
+		const auto paint = [&](QString part) {
+			return part
+				.replace(u"#3a7bd5"_q, accent)
+				.replace(u"#ffffff"_q, accentFg)
+				.replace(u"#fefefe"_q, bg)
+				.replace(u"#1b1f24"_q, fg)
+				.replace(u"#2a5ea8"_q, name)
+				.replace(u"#8a94a0"_q, sub)
+				.replace(u"#b04a3a"_q, Hex(st::attentionButtonFg))
+				.replace(u"#e6edf7"_q, Hex(st::lightButtonBgOver));
+		};
+		auto html = u"<html><body style=\"margin:4px; color:%1\">"_q.arg(fg);
 		const auto bubble = [&](bool mine, const QString &text) {
-			html += mine
+			html += paint(mine
 				? u"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:6px 0\"><tr><td width=\"18%\"></td>"
 					"<td align=\"right\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#3a7bd5\" style=\"color:#ffffff\">"_q
 				: u"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:6px 0\"><tr>"
-					"<td align=\"left\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#ffffff\" style=\"color:#1b1f24\">"
-					"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Помощник</span><br>"_q;
+					"<td align=\"left\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#fefefe\" style=\"color:#1b1f24\">"
+					"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Помощник</span><br>"_q);
 			html += BubbleHtml(text);
 			html += mine
 				? u"</td></tr></table></td></tr></table>"_q
@@ -1942,34 +2018,47 @@ void Assistant::showWindow() {
 			case Kind::Me: bubble(true, line.text); break;
 			case Kind::Bot: bubble(false, line.text); break;
 			case Kind::Step:
-				html += u"<p style=\"color:#8a94a0;font-size:12px;margin:2px 10px\">· "_q
+				html += paint(u"<p style=\"color:#8a94a0;font-size:12px;margin:2px 10px\">· "_q)
 					+ line.text.toHtmlEscaped() + u"</p>"_q;
 				break;
 			case Kind::Info:
-				html += u"<p align=\"center\" style=\"color:#b04a3a;font-size:12px;margin:6px 10px\">"_q
+				html += paint(u"<p align=\"center\" style=\"color:#b04a3a;font-size:12px;margin:6px 10px\">"_q)
 					+ line.text.toHtmlEscaped() + u"</p>"_q;
 				break;
 			}
 		}
 		if (asking()) {
-			html += u"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:6px 0\"><tr>"
-				"<td align=\"left\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#ffffff\" style=\"color:#1b1f24\">"
-				"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Помощник · подтвердите</span><br>"_q
+			html += paint(u"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:6px 0\"><tr>"
+				"<td align=\"left\"><table cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"#fefefe\" style=\"color:#1b1f24\">"
+				"<span style=\"color:#2a5ea8;font-weight:600;font-size:12px\">Помощник · подтвердите</span><br>"_q)
 				+ BubbleHtml(askText())
-				+ u"<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:10px\"><tr>"
+				+ paint(u"<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:10px\"><tr>"
 					"<td bgcolor=\"#3a7bd5\" style=\"padding:7px 16px\"><a href=\"plume:yes\" style=\"color:#ffffff;text-decoration:none;font-weight:600\">Выполнить</a></td>"
 					"<td width=\"8\"></td>"
 					"<td bgcolor=\"#e6edf7\" style=\"padding:7px 16px\"><a href=\"plume:no\" style=\"color:#2a5ea8;text-decoration:none;font-weight:600\">Отмена</a></td>"
 					"</tr></table>"
-					"</td></tr></table></td><td width=\"12%\"></td></tr></table>"_q;
+					"</td></tr></table></td><td width=\"12%\"></td></tr></table>"_q);
 		} else if (_busy) {
-			html += u"<p style=\"color:#8a94a0;font-size:12px;margin:6px 10px\"><i>Помощник печатает…</i></p>"_q;
+			html += paint(u"<p style=\"color:#8a94a0;font-size:12px;margin:6px 10px\"><i>Помощник печатает…</i></p>"_q);
 		}
 		html += u"</body></html>"_q;
 		feed->setHtml(html);
 		feed->verticalScrollBar()->setValue(feed->verticalScrollBar()->maximum());
 		sendButton->setEnabled(!_busy);
 	};
+	// Сменили тему (ночной режим и т.п.) — перекрасить панель.
+	const auto themeKeeper = new Ui::RpWidget(host);
+	themeKeeper->hide();
+	style::PaletteChanged(
+	) | rpl::on_next([=] {
+		host->setStyleSheet(AssistantStyleSheet());
+		if (const auto line = window->findChild<QWidget*>(u"plumeLine"_q)) {
+			line->setStyleSheet(u"background: %1;"_q.arg(Hex(st::shadowFg)));
+		}
+		if (weak) {
+			render();
+		}
+	}, themeKeeper->lifetime());
 	render();
 	if (_docked) {
 		_controller->window().showRightColumn(std::move(panel));
