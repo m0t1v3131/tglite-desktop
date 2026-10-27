@@ -2047,14 +2047,17 @@ void Assistant::switchDock() {
 	showWindow();
 }
 
-base::flat_map<not_null<Main::Session*>, std::unique_ptr<Assistant>> Assistants;
+// Помощник живёт, пока жив controller: при смене аккаунта окно получает новый
+// SessionController, а сессия остаётся — раньше помощник хранил старый и падал.
+base::flat_map<
+	not_null<Window::SessionController*>,
+	std::unique_ptr<Assistant>> Assistants;
 
 not_null<Assistant*> AssistantFor(not_null<Window::SessionController*> controller) {
-	const auto session = &controller->session();
-	auto &result = Assistants[session];
+	auto &result = Assistants[controller];
 	if (!result) {
 		result = std::make_unique<Assistant>(controller);
-		session->lifetime().add([=] { Assistants.remove(session); });
+		controller->lifetime().add([=] { Assistants.remove(controller); });
 	}
 	return result.get();
 }

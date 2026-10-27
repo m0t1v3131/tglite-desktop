@@ -575,9 +575,12 @@ void InstallUpdate(const QString &url) {
 			u"Потом Плюм закроется, поставит новую версию и откроется снова. Чаты и настройки сохранятся."_q,
 			st::boxDividerLabel));
 		box->addButton(rpl::single(u"Отмена"_q), [=] {
+			// abort() сразу вызывает finished, а тот закрывает и удаляет это окно —
+			// поэтому сначала закрыть окно, потом прервать (раньше Плюм падал).
+			const auto r = reply;
 			*canceled = true;
-			reply->abort();
 			box->closeBox();
+			r->abort();
 		});
 		QObject::connect(reply, &QNetworkReply::downloadProgress, label,
 			[=](qint64 received, qint64 total) {
@@ -597,7 +600,10 @@ void InstallUpdate(const QString &url) {
 	}), Ui::LayerOption::CloseOther);
 	QObject::connect(reply, &QNetworkReply::finished, [=] {
 		updating = false;
-		if (const auto strong = progressBox.get()) {
+		if (*canceled) {
+			reply->deleteLater();
+			return;
+		} else if (const auto strong = progressBox.get()) {
 			strong->closeBox();
 		}
 		reply->deleteLater();
