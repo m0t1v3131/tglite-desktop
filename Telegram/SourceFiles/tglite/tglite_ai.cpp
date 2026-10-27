@@ -16,6 +16,13 @@ Licensed under GNU GPL v. 3.
 #include "core/application.h"
 #include "window/window_controller.h"
 #include "api/api_common.h"
+#include "api/api_sending.h"
+#include "data/data_document.h"
+#include "data/data_histories.h"
+#include "data/data_media_types.h"
+#include "data/data_photo.h"
+#include "history/history_item.h"
+#include "inline_bots/bot_attach_web_view.h"
 #include "base/call_delayed.h"
 #include "base/event_filter.h"
 #include "base/timer.h"
@@ -206,6 +213,21 @@ QJsonArray Tools() {
 			  { u"forward_from_chat_id"_q, Prop(u"string"_q, u"откуда переслать — id чата, необязательно"_q) },
 			  { u"forward_message_id"_q, Prop(u"integer"_q, u"#номер сообщения для пересылки, необязательно"_q) } },
 			{ u"chat_ids"_q }),
+		Tool(u"mayak_task"_q,
+			u"Новый чат в Маяке (Claude работает над проектом владельца): задача обычными словами. Проект Маяк угадает по тексту."_q,
+			{ { u"text"_q, Prop(u"string"_q, u"что сделать, с подробностями"_q) } },
+			{ u"text"_q }),
+		Tool(u"mayak_news"_q,
+			u"Последние сообщения бота Маяка: начатые чаты, ответы Claude, «ждёт ответа». У каждого #номер."_q,
+			{ { u"limit"_q, Prop(u"integer"_q, u"сколько сообщений, по умолчанию 15"_q) } }),
+		Tool(u"mayak_reply"_q,
+			u"Ответить в чат Маяка: ответом на сообщение бота Маяка о нём (#номер из mayak_news). «закрой» — закрыть чат."_q,
+			{ { u"message_id"_q, Prop(u"integer"_q, u"#номер сообщения бота Маяка"_q) },
+			  { u"text"_q, Prop(u"string"_q, u"ответ"_q) } },
+			{ u"message_id"_q, u"text"_q }),
+		Tool(u"mayak_open"_q,
+			u"Открыть владельцу Маяк (сайт) в окне Плюма."_q,
+			{}),
 		Tool(u"takt_status"_q,
 			u"Состояние Такта (бот, который отвечает людям за пользователя): включён ли, темп, сухой прогон, «меня нет до», "
 			u"кто ждёт ответа пользователя, последние записи журнала (кому и что ответил или ответил бы) и чаты Такта. "
@@ -251,6 +273,10 @@ QString SystemPrompt() {
 		u"отправить или поправить черновик — takt_entry; режим для человека — takt_chat_mode. "
 		u"Если просят ответить человеку, по чьему сообщению у Такта есть черновик или ответ сухого прогона, — используй takt_entry, "
 		u"иначе send_message. Показывая черновики, пиши кому, что спросили и что Такт предлагает ответить. "
+		u"Ещё ты связан с Маяком — сайтом, где Claude делает проекты владельца (код, сайты, приложения). Задача, правка, баг, «сделай в Маяке/в проекте…» — mayak_task "
+		u"(одной понятной фразой, с нужными подробностями и текстом сообщений, если задача из переписки; проект Маяк угадает по тексту, название проекта лучше назвать). "
+		u"Что сделано в Маяке, кто ждёт ответа — mayak_news (сообщения бота Маяка с #номерами); ответить в такой чат — mayak_reply на #номер его сообщения. "
+		u"Показать Маяк целиком — mayak_open. "
 		u"Перед отправкой, пересылкой и рассылкой клиент сам спросит подтверждение — не переспрашивай лишний раз. "
 		u"Рассылки только небольшие (до 25 чатов), это личный аккаунт — массовые рассылки могут привести к блокировке."_q;
 }
@@ -289,6 +315,59 @@ History *FindChat(not_null<Main::Session*> session, const QString &id) {
 
 QString ChatId(not_null<History*> history) {
 	return QString::number(history->peer->id.value);
+}
+
+// ---------- Маяк ----------
+// Маяк — мини-приложение бота @mayak52_bot (вход по Telegram, без пароля); задачи — сообщениями владельца
+// своему боту («чат: …» — новый чат Claude). Через сервер Плюма не ходим: ключ помощника вшит в приложения.
+constexpr auto kMayakBotId = 8957007851ULL; // @mayak52_bot
+
+void WithMayakBot(not_null<Main::Session*> session, Fn<void(UserData*)> done) {
+	if (const auto bot = session->data().userLoaded(UserId(kMayakBotId))) {
+		done(bot);
+		return;
+	}
+	session->api().request(MTPcontacts_ResolveUsername(
+		MTP_flags(MTPcontacts_ResolveUsername::Flag()),
+		MTP_string(u"mayak52_bot"_q),
+		MTP_string(QString())
+	)).done([=](const MTPcontacts_ResolvedPeer &result) {
+		session->data().processUsers(result.data().vusers());
+		session->data().processChats(result.data().vchats());
+		done(session->data().userLoaded(UserId(kMayakBotId)));
+	}).fail([=](const MTP::Error &) {
+		done(nullptr);
+	}).send();
+}
+
+void SendToMayak(
+		not_null<Main::Session*> session,
+		const QString &text,
+		MsgId replyTo,
+		Fn<void(QString)> done,
+		PhotoData *photo = nullptr,
+		DocumentData *document = nullptr) {
+	WithMayakBot(session, [=](UserData *bot) {
+		if (!bot) {
+			done(u"не нашёл бота @mayak52_bot"_q);
+			return;
+		}
+		const auto history = session->data().history(bot);
+		auto action = Api::SendAction(history);
+		if (replyTo) {
+			action.replyTo = FullReplyTo{ .messageId = FullMsgId(history->peer->id, replyTo) };
+		}
+		auto message = Api::MessageToSend(action);
+		message.textWithTags = { text, TextWithTags::Tags() };
+		if (photo) {
+			Api::SendExistingPhoto(std::move(message), photo);
+		} else if (document) {
+			Api::SendExistingDocument(std::move(message), document);
+		} else {
+			session->api().sendMessage(std::move(message));
+		}
+		done(QString());
+	});
 }
 
 class Assistant final : public base::has_weak_ptr {
@@ -852,6 +931,44 @@ private:
 				(from && fromId) ? from->peer.get() : nullptr,
 				fromId,
 				done);
+		} else if (name == u"mayak_task"_q) {
+			const auto text = input.value(u"text"_q).toString().trimmed();
+			if (text.isEmpty()) {
+				done(u"пустая задача"_q, true);
+				return;
+			}
+			add(u"· ставлю задачу в Маяк"_q);
+			SendToMayak(_session, u"чат: "_q + text, 0, [=](QString error) {
+				done(error.isEmpty()
+					? u"отправлено боту Маяка — он угадает проект и начнёт чат; ответ придёт в бота Маяка (mayak_news)"_q
+					: u"не отправилось: "_q + error, !error.isEmpty());
+			});
+		} else if (name == u"mayak_reply"_q) {
+			const auto messageId = MsgId(input.value(u"message_id"_q).toInt());
+			const auto text = input.value(u"text"_q).toString().trimmed();
+			if (!messageId || text.isEmpty()) {
+				done(u"нужны message_id и text"_q, true);
+				return;
+			}
+			add(u"· отвечаю в чат Маяка"_q);
+			SendToMayak(_session, text, messageId, [=](QString error) {
+				done(error.isEmpty() ? u"ответ ушёл в чат Маяка"_q : u"не отправилось: "_q + error, !error.isEmpty());
+			});
+		} else if (name == u"mayak_news"_q) {
+			add(u"· смотрю, что в Маяке"_q);
+			const auto limit = std::clamp(input.value(u"limit"_q).toInt(15), 1, 40);
+			WithMayakBot(_session, [=, weak = base::make_weak(this)](UserData *bot) {
+				if (!weak) {
+					return;
+				} else if (!bot) {
+					done(u"не нашёл бота @mayak52_bot"_q, true);
+					return;
+				}
+				readMessages(_session->data().history(bot), limit, done);
+			});
+		} else if (name == u"mayak_open"_q) {
+			OpenMayak(_controller);
+			done(u"Маяк открыт на экране"_q, false);
 		} else if (name == u"takt_status"_q) {
 			add(u"· смотрю, что делал помощник"_q);
 			takt(u"/api/state"_q, std::nullopt, [=](QJsonObject data, QString error) {
@@ -1666,6 +1783,17 @@ void Assistant::showWindow() {
 	quickButton(u"Черновики"_q, u"Покажи черновики помощника, которые ждут моего решения"_q);
 	quickButton(u"Пауза"_q, u"Помощник, стоп — никому не отвечай, пока не скажу"_q);
 	quickButton(u"Продолжить"_q, u"Помощник, старт — продолжай отвечать"_q);
+	{
+		const auto button = new QPushButton(u"Маяк"_q, bottom);
+		button->setCursor(Qt::PointingHandCursor);
+		button->setToolTip(u"Открыть Маяк"_q);
+		QObject::connect(button, &QPushButton::clicked, [=] {
+			if (weak) {
+				OpenMayak(_controller);
+			}
+		});
+		quick->addWidget(button);
+	}
 	quick->addStretch(1);
 
 	const auto fill = [=](const QString &text) {
@@ -1746,6 +1874,7 @@ void Assistant::showWindow() {
 			chip(u"Разослать участникам"_q, [=] { fill(u"Напиши каждому участнику "_q + name + u" в личку: "_q); });
 		}
 		chip(u"Написать сюда"_q, [=] { fill(u"Напиши в "_q + name + u": "_q); });
+		chip(u"В Маяк"_q, [=] { fill(u"Поставь задачу в Маяк по "_q + (_chatMsg ? u"этому сообщению"_q : u"этому чату"_q) + u": "_q); });
 		chip(u"Сводка чата"_q, [=] { askNow(u"Коротко перескажи последние сообщения в "_q + name + u": о чём говорят и что ждут от меня."_q); });
 		if (group) {
 			chip(u"Участники"_q, [=] { askNow(u"Кто участники "_q + name + u"? С кем у меня ещё не было переписки?"_q); });
@@ -2304,6 +2433,59 @@ protected:
 
 };
 
+// Маяк рядом с «Помощником»: башня с лучами.
+class MayakButton final : public Ui::AbstractButton {
+public:
+	explicit MayakButton(QWidget *parent) : AbstractButton(parent) {
+		setCursor(style::cur_pointer);
+		resize(st::dialogsLock.height, st::dialogsLock.height);
+		setToolTip(u"Маяк"_q);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		if (isOver()) {
+			const auto h = std::min(height(), style::ConvertScale(30));
+			p.setPen(Qt::NoPen);
+			p.setBrush(st::windowBgOver);
+			p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
+		}
+		const auto u = style::ConvertScale(1.);
+		const auto cx = width() / 2.;
+		const auto top = height() / 2. - 9 * u;
+		const auto color = st::menuIconColor->c;
+		p.setPen(Qt::NoPen);
+		p.setBrush(color);
+		// крыша, фонарь, галерея, башня, основание
+		p.drawPolygon(QPolygonF(QVector<QPointF>{ QPointF(cx - 3 * u, top + 3 * u), QPointF(cx, top), QPointF(cx + 3 * u, top + 3 * u) }));
+		p.drawRect(QRectF(cx - 2 * u, top + 3.5 * u, 4 * u, 3 * u));
+		p.drawRect(QRectF(cx - 3.5 * u, top + 6.5 * u, 7 * u, 1.5 * u));
+		p.drawPolygon(QPolygonF(QVector<QPointF>{
+			QPointF(cx - 2.5 * u, top + 8 * u),
+			QPointF(cx + 2.5 * u, top + 8 * u),
+			QPointF(cx + 3.5 * u, top + 16.5 * u),
+			QPointF(cx - 3.5 * u, top + 16.5 * u) }));
+		p.drawRect(QRectF(cx - 5 * u, top + 16.5 * u, 10 * u, 1.5 * u));
+		// лучи
+		auto pen = QPen(color);
+		pen.setWidthF(1.5 * u);
+		pen.setCapStyle(Qt::RoundCap);
+		p.setPen(pen);
+		const auto y = top + 5 * u;
+		p.drawLine(QPointF(cx - 4 * u, y - 1 * u), QPointF(cx - 8 * u, y - 3 * u));
+		p.drawLine(QPointF(cx - 4 * u, y + 1 * u), QPointF(cx - 8 * u, y + 3 * u));
+		p.drawLine(QPointF(cx + 4 * u, y - 1 * u), QPointF(cx + 8 * u, y - 3 * u));
+		p.drawLine(QPointF(cx + 4 * u, y + 1 * u), QPointF(cx + 8 * u, y + 3 * u));
+	}
+
+	void onStateChanged(State was, StateChangeSource source) override {
+		update();
+	}
+
+};
+
 void InstallHotkey() {
 	static auto installed = false;
 	if (installed) {
@@ -2370,6 +2552,97 @@ Ui::AbstractButton *CreateTaktButton(
 		});
 	}
 	return result;
+}
+
+Ui::AbstractButton *CreateMayakButton(
+		not_null<QWidget*> parent,
+		not_null<Window::SessionController*> controller) {
+	const auto result = new MayakButton(parent);
+	result->setAccessibleName(u"Маяк"_q);
+	result->setClickedCallback([=] {
+		OpenMayak(controller);
+	});
+	return result;
+}
+
+void OpenMayak(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	const auto weak = base::make_weak(controller.get());
+	WithMayakBot(session, [=](UserData *bot) {
+		const auto strong = weak.get();
+		if (!strong) {
+			return;
+		} else if (!bot || !bot->isBot()) {
+			strong->showToast(u"Не нашёл бота @mayak52_bot"_q);
+			return;
+		}
+		const auto url = (bot->botInfo && !bot->botInfo->botMenuButtonUrl.isEmpty())
+			? bot->botInfo->botMenuButtonUrl
+			: u"https://mayak.amdiveev.ru"_q;
+		session->attachWebView().open({
+			.bot = bot,
+			.context = { .controller = weak },
+			.button = { .url = url.toUtf8() },
+			.source = InlineBots::WebViewSourceBotMenu(),
+		});
+		// Бот спрятан — его сообщения читаем здесь, чтобы не копился счётчик.
+		const auto history = session->data().history(bot);
+		if (history->unreadCount() > 0) {
+			session->data().histories().readInbox(history);
+		}
+	});
+}
+
+void ShowSendToMayak(
+		not_null<Window::SessionController*> controller,
+		not_null<HistoryItem*> item) {
+	const auto session = &controller->session();
+	const auto weak = base::make_weak(controller.get());
+	const auto chat = item->history()->peer->name();
+	const auto from = item->from()->name();
+	const auto body = item->originalText().text;
+	const auto media = item->media();
+	const auto photo = media ? media->photo() : nullptr;
+	const auto document = (media && media->document() && media->document()->size <= 20 * 1024 * 1024)
+		? media->document()
+		: nullptr;
+	const auto quote = body.isEmpty()
+		? u"[вложение]"_q
+		: (body.size() > 300 ? body.left(299) + u"…"_q : body);
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"В Маяк — новым чатом"_q));
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			from + u" в «"_q + chat + u"»:\n"_q + quote,
+			st::boxLabel));
+		const auto field = box->addRow(object_ptr<Ui::InputField>(
+			box,
+			st::defaultInputField,
+			rpl::single(u"Что сделать? (можно пусто)"_q),
+			QString()));
+		box->setFocusCallback([=] { field->setFocusFast(); });
+		const auto submit = [=] {
+			const auto what = field->getLastText().trimmed();
+			const auto text = u"чат: "_q
+				+ (what.isEmpty() ? u"разберись с этим сообщением"_q : what)
+				+ u"\n\nСообщение от "_q + from + u" в «"_q + chat + u"»:\n"_q
+				+ (body.isEmpty() ? u"[вложение]"_q : body);
+			const auto withMedia = (text.size() <= 1000);
+			box->closeBox();
+			SendToMayak(session, text, 0, [=](QString error) {
+				if (const auto strong = weak.get()) {
+					strong->showToast(error.isEmpty()
+						? u"Отправлено в Маяк — новый чат"_q
+						: u"Не отправилось в Маяк: "_q + error);
+				}
+			}, withMedia ? photo : nullptr, withMedia ? document : nullptr);
+		};
+		field->submits() | rpl::on_next([=](Qt::KeyboardModifiers) {
+			submit();
+		}, field->lifetime());
+		box->addButton(rpl::single(u"Отправить"_q), submit);
+		box->addButton(rpl::single(u"Отмена"_q), [=] { box->closeBox(); });
+	}));
 }
 
 Ui::AbstractButton *CreatePlumeSettingsButton(

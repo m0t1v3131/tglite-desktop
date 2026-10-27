@@ -3471,7 +3471,7 @@ bool History::trackUnreadMessages() const {
 bool History::shouldBeInChatList() const {
 	if (TgLite::FocusHidden(this)) {
 		return false; // Плюм: фокус-режим прячет выбранные чаты
-	} else if (TgLite::TaktBotHidden(this)) {
+	} else if (TgLite::TaktBotHidden(this) || TgLite::MayakBotHidden(this)) {
 		return false; // Плюм: бот Такт спрятан — с ним работает Помощник
 	} else if (TgLite::ArchiveJunkHidden(this)) {
 		return false; // Плюм: в архиве без чужих каналов и открытых групп

@@ -3194,6 +3194,12 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			_menu->addAction(u"Спросить помощника"_q, [=] {
 				TgLite::ShowAssistantForChat(controller, peer, msgId, text);
 			}, &st::menuIconBot);
+			const auto mayakId = item->fullId();
+			_menu->addAction(u"В Маяк"_q, [=] {
+				if (const auto item = session->data().message(mayakId)) {
+					TgLite::ShowSendToMayak(controller, item);
+				}
+			}, &st::menuIconSend);
 		}
 		if (item->canBeSelected() && !hasSelectRestriction()) {
 			const auto itemId = item->fullId();

@@ -16,6 +16,7 @@ class InputField;
 
 class QWidget;
 class History;
+class HistoryItem;
 class PeerData;
 
 namespace TgLite {
@@ -47,6 +48,17 @@ void ShowAssistantForChat(
 
 // Круглая кнопка-шестерёнка «Настройки Плюма» рядом с «Takt»: окно настроек в одно нажатие.
 [[nodiscard]] Ui::AbstractButton *CreatePlumeSettingsButton(
+	not_null<QWidget*> parent,
+	not_null<Window::SessionController*> controller);
+
+// Маяк внутри Плюма: мини-приложение бота @mayak52_bot (mayak.amdiveev.ru, вход по Telegram без пароля).
+void OpenMayak(not_null<Window::SessionController*> controller);
+// «В Маяк» у сообщения: новый чат в Маяке с этим сообщением (и его фото/файлом) — сообщением «чат: …» своему боту.
+void ShowSendToMayak(
+	not_null<Window::SessionController*> controller,
+	not_null<HistoryItem*> item);
+// Круглая кнопка-маяк рядом с «Помощником» над чатами.
+[[nodiscard]] Ui::AbstractButton *CreateMayakButton(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
 

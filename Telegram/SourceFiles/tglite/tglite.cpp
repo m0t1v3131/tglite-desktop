@@ -82,6 +82,7 @@ constexpr auto kPort = 10879;
 constexpr auto kUpdateUrl = "https://plume.amdiveev.ru/tglite-desktop.json";
 constexpr auto kSubscriptionAgent = "Happ/3.0.0";
 constexpr auto kTaktBotId = uint64(8909004776); // бот Такт — свой, из архива не прячем
+constexpr auto kMayakBotId = uint64(8957007851); // бот Маяка — тоже свой
 constexpr auto kQuietUnread = 30;
 
 struct Entry {
@@ -152,6 +153,7 @@ bool IsSyncedKey(const QString &key) {
 		u"focusMode"_q,
 		u"focusChats"_q,
 		u"hideTaktBot"_q,
+		u"hideMayakBot"_q,
 	};
 	return keys.contains(key);
 }
@@ -956,6 +958,7 @@ bool ArchiveJunkHidden(not_null<const History*> history) {
 		return HideArchiveBotsFlag()
 			&& user->isBot()
 			&& (user->id.value != kTaktBotId)
+			&& (user->id.value != kMayakBotId)
 			&& !(user->botInfo && user->botInfo->canEditInformation);
 	}
 	const auto channel = history->peer->asChannel();
@@ -1029,6 +1032,32 @@ void SetHideTaktBot(not_null<Main::Session*> session, bool enabled) {
 	HideTaktBotFlag() = enabled;
 	SetState(u"hideTaktBot"_q, enabled);
 	const auto peer = peerFromUser(UserId(kHiddenTaktBotId));
+	if (const auto history = session->data().historyLoaded(peer)) {
+		history->updateChatListExistence();
+	}
+}
+
+bool &HideMayakBotFlag() {
+	static auto result = ReadState().value(u"hideMayakBot"_q).toBool(true);
+	return result;
+}
+
+bool HideMayakBot() {
+	return HideMayakBotFlag();
+}
+
+bool MayakBotHidden(not_null<const History*> history) {
+	return HideMayakBotFlag()
+		&& (history->peer->id == peerFromUser(UserId(kMayakBotId)));
+}
+
+void SetHideMayakBot(not_null<Main::Session*> session, bool enabled) {
+	if (HideMayakBotFlag() == enabled) {
+		return;
+	}
+	HideMayakBotFlag() = enabled;
+	SetState(u"hideMayakBot"_q, enabled);
+	const auto peer = peerFromUser(UserId(kMayakBotId));
 	if (const auto history = session->data().historyLoaded(peer)) {
 		history->updateChatListExistence();
 	}
@@ -1248,6 +1277,7 @@ QJsonObject SyncedSettings() {
 		{ u"focusMode"_q, FocusActive() },
 		{ u"focusChats"_q, chats },
 		{ u"hideTaktBot"_q, HideTaktBotFlag() },
+		{ u"hideMayakBot"_q, HideMayakBotFlag() },
 	};
 }
 
@@ -1288,6 +1318,9 @@ bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
 	});
 	flag(u"hideTaktBot"_q, HideTaktBotFlag(), [&](bool v) {
 		SetHideTaktBot(session, v);
+	});
+	flag(u"hideMayakBot"_q, HideMayakBotFlag(), [&](bool v) {
+		SetHideMayakBot(session, v);
 	});
 	flag(u"quietGroups"_q, QuietGroupsFlag(), [](bool v) {
 		SetQuietGroups(v);
@@ -1885,6 +1918,19 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		}, hideBot->lifetime());
 		AddHint(box, u"Чат с @takt52_bot не виден в списке и не присылает уведомлений — "
 			u"всё с ним делает Помощник. Сам бот работает и отвечает людям, как раньше."_q);
+
+		section(u"Маяк"_q);
+		AddLink(box, u"Открыть Маяк"_q)->setClickedCallback([=] {
+			box->closeBox();
+			OpenMayak(controller);
+		});
+		const auto hideMayak = AddToggle(box, u"Спрятать бота Маяка"_q, rpl::single(HideMayakBot()));
+		hideMayak->toggledChanges() | rpl::on_next([=](bool on) {
+			SetHideMayakBot(&controller->session(), on);
+		}, hideMayak->lifetime());
+		AddHint(box, u"Маяк — кнопка-маяк над чатами рядом с Помощником, вход без пароля. "
+			u"«В Маяк» в меню сообщения — новый чат в Маяке с этим сообщением. Помощнику можно сказать "
+			u"«поставь задачу в Маяк…» или «что в Маяке?». Спрятанный бот не виден в чатах, уведомления от него приходят."_q);
 
 		section(u"Аккаунты"_q);
 		for (const auto &account : Core::App().domain().orderedAccounts()) {

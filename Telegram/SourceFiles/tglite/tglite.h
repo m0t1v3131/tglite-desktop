@@ -21,7 +21,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102623;
+inline constexpr auto kBuild = 26102711;
 
 void Start();
 void Stop();
@@ -35,6 +35,10 @@ void SetHideArchiveJunk(not_null<Main::Session*> session, bool enabled);
 [[nodiscard]] bool HideTaktBot();
 [[nodiscard]] bool TaktBotHidden(not_null<const History*> history);
 void SetHideTaktBot(not_null<Main::Session*> session, bool enabled);
+// Бот Маяка (@mayak52_bot) спрятан из списка чатов: Маяк — кнопкой рядом с Помощником. Уведомления от него приходят.
+[[nodiscard]] bool HideMayakBot();
+[[nodiscard]] bool MayakBotHidden(not_null<const History*> history);
+void SetHideMayakBot(not_null<Main::Session*> session, bool enabled);
 // Чужие боты в архиве тоже не показываются (по умолчанию да; свои и бот Такт остаются).
 [[nodiscard]] bool HideArchiveBots();
 void SetHideArchiveBots(not_null<Main::Session*> session, bool enabled);

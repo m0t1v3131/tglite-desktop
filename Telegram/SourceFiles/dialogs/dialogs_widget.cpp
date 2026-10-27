@@ -688,6 +688,9 @@ Widget::Widget(
 		_plumeSettings = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreatePlumeSettingsButton(_searchControls, controller));
 		_plumeSettings->show();
+		_mayak = object_ptr<Ui::AbstractButton>::fromRaw(
+			TgLite::CreateMayakButton(_searchControls, controller));
+		_mayak->show();
 	}
 	const auto lockUnlock = _lockUnlock->entity();
 	lockUnlock->setAccessibleName(tr::lng_shortcuts_lock(tr::now));
@@ -4567,7 +4570,8 @@ void Widget::updateControlsGeometry() {
 	const auto filterRight = st::dialogsFilterSkip
 		+ st::dialogsFilterPadding.x();
 	const auto plumeWidth = (_plume ? _plume->width() : 0)
-		+ (_plumeSettings ? _plumeSettings->width() : 0);
+		+ (_plumeSettings ? _plumeSettings->width() : 0)
+		+ (_mayak ? _mayak->width() : 0);
 	const auto filterWidth = std::max(ratiow, smallw)
 		- filterLeft
 		- filterRight
@@ -4615,12 +4619,22 @@ void Widget::updateControlsGeometry() {
 			st::dialogsFilterPadding.y());
 		_plumeSettings->setVisible(narrowRatio == 0.);
 	}
+	if (_mayak) {
+		_mayak->moveToLeft(
+			filterLeft
+				+ filterWidth
+				+ st::dialogsFilterPadding.x() / 2
+				+ (_plumeSettings ? _plumeSettings->width() : 0),
+			st::dialogsFilterPadding.y());
+		_mayak->setVisible(narrowRatio == 0.);
+	}
 	if (_plume) {
 		_plume->moveToLeft(
 			filterLeft
 				+ filterWidth
 				+ st::dialogsFilterPadding.x() / 2
-				+ (_plumeSettings ? _plumeSettings->width() : 0),
+				+ (_plumeSettings ? _plumeSettings->width() : 0)
+				+ (_mayak ? _mayak->width() : 0),
 			st::dialogsFilterPadding.y());
 		_plume->setVisible(narrowRatio == 0.);
 	}
