@@ -677,7 +677,11 @@ void InstallUpdate(const QString &url) {
 				return;
 			}
 #else // Q_OS_WIN
-			// Mac: архив .app распаковывается поверх, затем программа перезапускается.
+			// Mac: архив .app распаковывается во временную папку и заменяет
+			// программу целиком, затем Плюм перезапускается. Плюм помечает
+			// скачанное карантином (LSFileQuarantineEnabled), а ditto с таким
+			// архивом не может распаковать прямо в «Программы» — поэтому
+			// карантин снимается заранее, а распаковка идёт не туда.
 			const auto zip = QDir::tempPath() + u"/tglite-update.zip"_q;
 			QFile f(zip);
 			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -693,11 +697,30 @@ void InstallUpdate(const QString &url) {
 			app.cdUp();
 			app.cdUp();
 			const auto bundle = app.absolutePath();
-			const auto parent = QFileInfo(bundle).absolutePath();
 			const auto script = QString(
-				"sleep 2; ditto -x -k '%1' '%2' && xattr -cr '%3'; open '%3'"
-			).arg(zip, parent, bundle);
-			QProcess::startDetached(u"/bin/sh"_q, { u"-c"_q, script });
+				"n=0; while kill -0 \"$3\" 2>/dev/null && [ $n -lt 60 ]; do "
+				"sleep 1; n=$((n+1)); done; "
+				"xattr -c \"$1\"; "
+				"t=$(mktemp -d /tmp/plume-update.XXXXXX) || exit 1; "
+				"if ditto -x -k \"$1\" \"$t\" && [ -d \"$t/Plume.app\" ]; then "
+				"xattr -cr \"$t/Plume.app\"; "
+				"if mv \"$2\" \"$t/old.app\"; then "
+				"mv \"$t/Plume.app\" \"$2\" || mv \"$t/old.app\" \"$2\"; "
+				"else ditto \"$t/Plume.app\" \"$2\"; fi; "
+				"xattr -cr \"$2\"; "
+				"fi; "
+				"open \"$2\"; "
+				"rm -rf \"$t\" \"$1\"");
+			QProcess::startDetached(
+				u"/bin/sh"_q,
+				{
+					u"-c"_q,
+					script,
+					u"plume-update"_q,
+					zip,
+					bundle,
+					QString::number(QCoreApplication::applicationPid()),
+				});
 #endif // Q_OS_WIN
 			Core::Quit();
 			},
