@@ -790,6 +790,12 @@ void MainMenu::setupMenu() {
 		TgLite::RequestDigest(controller);
 	});
 	addAction(
+		rpl::single(u"Разбор чатов"_q),
+		{ &st::menuIconArchive }
+	)->setClickedCallback([=] {
+		TgLite::ShowTriageBox(controller);
+	});
+	addAction(
 		rpl::single(u"Сводка и чистка"_q),
 		{ &st::menuIconStats }
 	)->setClickedCallback([=] {

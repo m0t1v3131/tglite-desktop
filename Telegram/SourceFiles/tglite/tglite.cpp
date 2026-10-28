@@ -19,10 +19,14 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "boxes/peer_list_controllers.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
+#include "data/data_folder.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
 #include "data/data_thread.h"
 #include "data/data_user.h"
+#include "dialogs/dialogs_indexed_list.h"
+#include "dialogs/dialogs_main_list.h"
+#include "dialogs/dialogs_row.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_unread_things.h"
@@ -2084,6 +2088,494 @@ void ShowSummaryBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
+namespace {
+
+// «Разбор чатов»: люди из основного списка по одному — в архив, в контакты или оставить.
+// Оставленных помним (tglite.json → triageKept), в следующий раз их не показываем.
+base::flat_set<uint64> &TriageKept() {
+	static auto result = [] {
+		auto list = base::flat_set<uint64>();
+		for (const auto &id : ReadState().value(u"triageKept"_q).toArray()) {
+			list.emplace(id.toString().toULongLong());
+		}
+		return list;
+	}();
+	return result;
+}
+
+void SaveTriageKept() {
+	auto list = QJsonArray();
+	for (const auto id : TriageKept()) {
+		list.push_back(QString::number(id));
+	}
+	SetState(u"triageKept"_q, list);
+}
+
+bool TriageCandidate(not_null<History*> history) {
+	const auto user = history->peer->asUser();
+	return user
+		&& !user->isSelf()
+		&& !user->isServiceUser()
+		&& !user->isRepliesChat()
+		&& !user->isVerifyCodes()
+		&& !history->folder()
+		&& !history->isPinnedDialog(FilterId())
+		&& !FocusHidden(history)
+		&& !TaktBotHidden(history)
+		&& !MayakBotHidden(history)
+		&& !TriageKept().contains(user->id.value);
+}
+
+// Пачкой по 100 одним запросом: сотни чатов уходят в архив за пару секунд и без флуда.
+void ArchiveMany(
+		not_null<Main::Session*> session,
+		std::vector<not_null<History*>> list,
+		Fn<void(int)> done,
+		int sent = 0) {
+	if (list.empty()) {
+		done(sent);
+		return;
+	}
+	const auto chunk = std::min(int(list.size()), 100);
+	const auto part = std::vector<not_null<History*>>(list.begin(), list.begin() + chunk);
+	const auto rest = std::vector<not_null<History*>>(list.begin() + chunk, list.end());
+	auto peers = QVector<MTPInputFolderPeer>();
+	peers.reserve(chunk);
+	for (const auto &history : part) {
+		peers.push_back(MTP_inputFolderPeer(
+			history->peer->input(),
+			MTP_int(Data::Folder::kId)));
+	}
+	session->api().request(MTPfolders_EditPeerFolders(
+		MTP_vector<MTPInputFolderPeer>(peers)
+	)).done([=](const MTPUpdates &result) {
+		session->api().applyUpdates(result);
+		const auto folder = session->data().folder(Data::Folder::kId);
+		for (const auto &history : part) {
+			history->setFolder(folder);
+		}
+		ArchiveMany(session, rest, done, sent + chunk);
+	}).fail([=] {
+		done(sent);
+	}).send();
+}
+
+void AddToContacts(not_null<UserData*> user, Fn<void(bool)> done) {
+	const auto first = user->firstName.isEmpty() ? user->name() : user->firstName;
+	user->session().api().request(MTPcontacts_AddContact(
+		MTP_flags(MTPcontacts_AddContact::Flag(0)),
+		user->inputUser(),
+		MTP_string(first),
+		MTP_string(user->firstName.isEmpty() ? QString() : user->lastName),
+		MTP_string(user->phone()),
+		MTPTextWithEntities()
+	)).done([=](const MTPUpdates &result) {
+		user->session().api().applyUpdates(result);
+		done(true);
+	}).fail([=] {
+		done(false);
+	}).send();
+}
+
+QString TriageWhen(TimeId date) {
+	const auto when = base::unixtime::parse(date);
+	const auto days = when.date().daysTo(QDate::currentDate());
+	return (days == 0)
+		? when.toString(u"HH:mm"_q)
+		: (days == 1)
+		? u"вчера"_q
+		: (days < 300)
+		? when.toString(u"dd.MM"_q)
+		: when.toString(u"dd.MM.yyyy"_q);
+}
+
+} // namespace
+
+void ShowTriageBox(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	session->api().requestMoreDialogsIfNeeded();
+
+	enum class Did {
+		Archive,
+		Keep,
+		Contact,
+		ContactArchive,
+	};
+	struct Step {
+		not_null<History*> history;
+		Did did = Did::Keep;
+	};
+	struct State {
+		std::vector<not_null<History*>> queue;
+		base::flat_set<not_null<History*>> seen;
+		int index = 0;
+		std::vector<Step> steps;
+		int archived = 0;
+		int contacts = 0;
+		int kept = 0;
+		bool busy = false;
+		rpl::variable<QString> contactText;
+		rpl::variable<QString> contactArchiveText;
+		rpl::variable<QString> strangersText;
+		rpl::variable<QString> restText;
+		Fn<void()> refresh;
+		Fn<void()> collect;
+	};
+
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Разбор чатов"_q));
+		box->setWidth(st::boxWideWidth);
+		const auto state = box->lifetime().make_state<State>();
+
+		const auto current = [=]() -> History* {
+			return (state->index < int(state->queue.size()))
+				? state->queue[state->index].get()
+				: nullptr;
+		};
+		const auto left = [=] {
+			auto result = std::vector<not_null<History*>>();
+			for (auto i = state->index; i < int(state->queue.size()); ++i) {
+				const auto history = state->queue[i];
+				if (!history->folder()) {
+					result.push_back(history);
+				}
+			}
+			return result;
+		};
+		state->collect = [=] {
+			for (const auto row : *session->data().chatsList()->indexed()) {
+				if (const auto history = row->history()) {
+					if (!state->seen.contains(history) && TriageCandidate(history)) {
+						state->seen.emplace(history);
+						state->queue.push_back(history);
+					}
+				}
+			}
+		};
+		state->collect();
+
+		const auto progress = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			QString(),
+			st::boxDividerLabel));
+		const auto name = box->addRow(
+			object_ptr<Ui::FlatLabel>(box, QString(), st::defaultSubsectionTitle),
+			st::defaultSubsectionTitlePadding);
+		const auto info = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			QString(),
+			st::boxDividerLabel));
+		const auto preview = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			QString(),
+			st::boxLabel));
+
+		const auto action = [=](rpl::producer<QString> text) {
+			return box->addRow(
+				object_ptr<Ui::SettingsButton>(
+					box,
+					std::move(text),
+					st::settingsButtonNoIcon),
+				style::margins());
+		};
+		const auto archive = action(rpl::single(u"В архив"_q));
+		const auto contact = action(state->contactText.value());
+		const auto contactArchive = action(state->contactArchiveText.value());
+		const auto keep = action(rpl::single(u"Оставить в списке"_q));
+		const auto open = action(rpl::single(u"Открыть чат"_q));
+
+		box->addRow(
+			object_ptr<Ui::FlatLabel>(box, u"Сразу всех"_q, st::defaultSubsectionTitle),
+			st::defaultSubsectionTitlePadding);
+		const auto strangers = action(state->strangersText.value());
+		const auto rest = action(state->restText.value());
+		AddHint(box, u"Личные чаты из основного списка, новые сверху. Закреплённые и спрятанные фокусом сюда не попадают. "
+			u"Кого оставили — в следующий раз не покажем; в архиве люди никуда не пропадают, "
+			u"а напишут — чат вернётся в список."_q);
+
+		state->refresh = [=] {
+			const auto history = current();
+			const auto total = int(state->queue.size());
+			auto line = history
+				? (QString::number(state->index + 1) + u" из "_q + QString::number(total))
+				: (u"Разобрано: "_q + QString::number(total));
+			if (state->archived) {
+				line += u" · в архив "_q + QString::number(state->archived);
+			}
+			if (state->contacts) {
+				line += u" · в контакты "_q + QString::number(state->contacts);
+			}
+			if (state->kept) {
+				line += u" · оставлено "_q + QString::number(state->kept);
+			}
+			if (!session->data().chatsListLoaded()) {
+				line += u" · чаты ещё догружаются"_q;
+			}
+			progress->setText(line);
+
+			const auto list = left();
+			auto unknown = 0;
+			for (const auto &entry : list) {
+				const auto user = entry->peer->asUser();
+				if (user && !user->isContact()) {
+					++unknown;
+				}
+			}
+			state->strangersText = u"Всех, кого нет в контактах, — в архив · "_q + QString::number(unknown);
+			state->restText = u"Всех оставшихся — в архив · "_q + QString::number(list.size());
+
+			if (!history) {
+				name->setText(u"Готово — всё разобрано"_q);
+				info->setText(total
+					? u"Новые люди появятся здесь, когда напишут."_q
+					: u"В основном списке не осталось неразобранных личных чатов."_q);
+				preview->setText(QString());
+				state->contactText = u"В контакты"_q;
+				state->contactArchiveText = u"В контакты и в архив"_q;
+				return;
+			}
+			const auto user = history->peer->asUser();
+			name->setText(history->peer->name());
+			auto details = QStringList();
+			if (user && !user->username().isEmpty()) {
+				details.push_back('@' + user->username());
+			}
+			if (user && !user->phone().isEmpty()) {
+				details.push_back('+' + user->phone());
+			}
+			details.push_back(!user
+				? QString()
+				: user->isBot()
+				? u"бот"_q
+				: user->isInaccessible()
+				? u"удалённый аккаунт"_q
+				: user->isContact()
+				? u"в контактах"_q
+				: u"не в контактах"_q);
+			if (const auto unread = history->unreadCount()) {
+				details.push_back(u"непрочитанных "_q + QString::number(unread));
+			}
+			info->setText(details.join(u" · "_q));
+			const auto last = history->chatListMessage();
+			auto text = last
+				? last->notificationText().text.simplified()
+				: QString();
+			if (text.size() > 280) {
+				text = text.left(279) + u"…"_q;
+			}
+			preview->setText(last
+				? (TriageWhen(last->date())
+					+ u" · "_q
+					+ (last->out() ? u"Вы: "_q : QString())
+					+ text)
+				: u"Сообщений нет"_q);
+			const auto canAdd = user && !user->isBot() && !user->isInaccessible() && !user->isContact();
+			state->contactText = canAdd
+				? u"В контакты"_q
+				: (user && user->isContact())
+				? u"Уже в контактах — оставить"_q
+				: u"В контакты нельзя — оставить"_q;
+			state->contactArchiveText = canAdd
+				? u"В контакты и в архив"_q
+				: u"В архив (в контакты не добавить)"_q;
+		};
+
+		const auto next = [=] {
+			++state->index;
+			state->busy = false;
+			state->refresh();
+		};
+		const auto doArchive = [=](not_null<History*> history, Fn<void()> done) {
+			ArchiveMany(session, { history }, crl::guard(box, [=](int sent) {
+				if (!sent) {
+					controller->showToast(u"Не получилось убрать в архив — проверьте связь"_q);
+				}
+				done();
+			}));
+		};
+		const auto doKeep = [=](not_null<History*> history) {
+			TriageKept().emplace(history->peer->id.value);
+			SaveTriageKept();
+		};
+
+		archive->setClickedCallback([=] {
+			const auto history = current();
+			if (!history || state->busy) {
+				return;
+			}
+			state->busy = true;
+			state->steps.push_back({ history, Did::Archive });
+			++state->archived;
+			doArchive(history, next);
+		});
+		const auto contactClicked = [=](bool alsoArchive) {
+			const auto history = current();
+			if (!history || state->busy) {
+				return;
+			}
+			const auto user = history->peer->asUser();
+			const auto canAdd = user && !user->isBot() && !user->isInaccessible() && !user->isContact();
+			state->busy = true;
+			if (!canAdd) {
+				if (alsoArchive) {
+					state->steps.push_back({ history, Did::Archive });
+					++state->archived;
+					doArchive(history, next);
+				} else {
+					state->steps.push_back({ history, Did::Keep });
+					++state->kept;
+					doKeep(history);
+					next();
+				}
+				return;
+			}
+			AddToContacts(user, crl::guard(box, [=](bool ok) {
+				if (!ok) {
+					state->busy = false;
+					controller->showToast(u"Не получилось добавить в контакты — проверьте связь"_q);
+					return;
+				}
+				++state->contacts;
+				if (alsoArchive) {
+					state->steps.push_back({ history, Did::ContactArchive });
+					doArchive(history, next);
+				} else {
+					state->steps.push_back({ history, Did::Contact });
+					doKeep(history);
+					next();
+				}
+			}));
+		};
+		contact->setClickedCallback([=] { contactClicked(false); });
+		contactArchive->setClickedCallback([=] { contactClicked(true); });
+		keep->setClickedCallback([=] {
+			const auto history = current();
+			if (!history || state->busy) {
+				return;
+			}
+			state->steps.push_back({ history, Did::Keep });
+			++state->kept;
+			doKeep(history);
+			next();
+		});
+		open->setClickedCallback([=] {
+			if (const auto history = current()) {
+				box->closeBox();
+				controller->showPeerHistory(history->peer);
+			}
+		});
+
+		const auto bulk = [=](bool onlyStrangers) {
+			if (state->busy) {
+				return;
+			}
+			auto list = left();
+			if (onlyStrangers) {
+				list.erase(ranges::remove_if(list, [](not_null<History*> history) {
+					const auto user = history->peer->asUser();
+					return !user || user->isContact();
+				}), list.end());
+			}
+			if (list.empty()) {
+				controller->showToast(u"Некого убирать"_q);
+				return;
+			}
+			const auto count = int(list.size());
+			controller->show(Ui::MakeConfirmBox({
+				.text = (onlyStrangers
+					? u"Убрать в архив всех, кого нет в контактах: "_q
+					: u"Убрать в архив всех оставшихся: "_q)
+					+ QString::number(count)
+					+ u"? Вернуть можно из архива, а напишут — чат вернётся сам."_q,
+				.confirmed = crl::guard(box, [=](Fn<void()> close) {
+					close();
+					state->busy = true;
+					progress->setText(u"Убираю в архив: "_q + QString::number(count) + u"…"_q);
+					ArchiveMany(session, list, crl::guard(box, [=](int sent) {
+						state->busy = false;
+						state->archived += sent;
+						state->steps.clear();
+						// Убранные пропускаем: в очереди остаются только те, кто ещё в списке.
+						auto keepQueue = std::vector<not_null<History*>>();
+						for (auto i = 0; i != int(state->queue.size()); ++i) {
+							if (i < state->index || !state->queue[i]->folder()) {
+								keepQueue.push_back(state->queue[i]);
+							}
+						}
+						state->queue = std::move(keepQueue);
+						if (sent < count) {
+							controller->showToast(u"Убрано "_q
+								+ QString::number(sent)
+								+ u" из "_q
+								+ QString::number(count)
+								+ u" — связь прервалась, нажмите ещё раз"_q);
+						} else {
+							controller->showToast(u"В архиве: "_q + QString::number(sent));
+						}
+						state->refresh();
+					}));
+				}),
+				.confirmText = rpl::single(u"В архив"_q),
+			}));
+		};
+		strangers->setClickedCallback([=] { bulk(true); });
+		rest->setClickedCallback([=] { bulk(false); });
+
+		box->addLeftButton(rpl::single(u"Назад"_q), [=] {
+			if (state->busy || state->steps.empty() || !state->index) {
+				return;
+			}
+			const auto step = state->steps.back();
+			state->steps.pop_back();
+			const auto history = step.history;
+			switch (step.did) {
+			case Did::Archive:
+				--state->archived;
+				[[fallthrough]];
+			case Did::ContactArchive:
+				session->api().toggleHistoryArchived(history, false, [] {});
+				break;
+			case Did::Keep:
+				--state->kept;
+				[[fallthrough]];
+			case Did::Contact:
+				TriageKept().remove(history->peer->id.value);
+				SaveTriageKept();
+				break;
+			}
+			if (step.did == Did::Contact || step.did == Did::ContactArchive) {
+				--state->contacts;
+				controller->showToast(u"Из контактов не убирали — это можно в профиле"_q);
+			}
+			const auto i = ranges::find(state->queue, history);
+			if (i != end(state->queue)) {
+				state->index = int(i - begin(state->queue));
+			} else {
+				state->queue.insert(begin(state->queue) + state->index - 1, history);
+				--state->index;
+			}
+			state->refresh();
+		});
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+
+		session->data().chatsListChanges(
+		) | rpl::on_next([=](Data::Folder *folder) {
+			if (!folder) {
+				state->collect();
+				state->refresh();
+			}
+		}, box->lifetime());
+		session->data().chatsListLoadedEvents(
+		) | rpl::on_next([=](Data::Folder *folder) {
+			if (!folder) {
+				state->collect();
+				state->refresh();
+			}
+		}, box->lifetime());
+		state->refresh();
+	}));
+}
+
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(rpl::single(u"Настройки Плюма"_q));
@@ -2123,6 +2615,12 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			u"ссылки на сообщения. Сами чаты остаются непрочитанными."_q);
 
 		section(u"Чистка"_q);
+		AddLink(box, u"Разбор чатов"_q)->setClickedCallback([=] {
+			box->closeBox();
+			ShowTriageBox(controller);
+		});
+		AddHint(box, u"Люди из списка по одному: в архив, в контакты или оставить. "
+			u"Можно сразу всех, кого нет в контактах, — в архив. Ещё — ☰ → «Разбор чатов»."_q);
 		AddLink(box, u"Сводка и чистка"_q)->setClickedCallback([=] {
 			ShowSummaryBox(controller);
 		});

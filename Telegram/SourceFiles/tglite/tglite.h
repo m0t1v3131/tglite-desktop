@@ -22,7 +22,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102822;
+inline constexpr auto kBuild = 26102823;
 
 void Start();
 void Stop();
@@ -62,6 +62,8 @@ void OpenDigestChat(not_null<Window::SessionController*> controller);
 void ShowWaitingBox(not_null<Window::SessionController*> controller);
 // Сводка: непрочитанные, кто шумит, что спрятано, и выход из заброшенных каналов и групп.
 void ShowSummaryBox(not_null<Window::SessionController*> controller);
+// «Разбор чатов»: люди из основного списка по одному — в архив, в контакты или оставить; сразу всех — в архив.
+void ShowTriageBox(not_null<Window::SessionController*> controller);
 
 // Общие настройки на телефоне, ПК и Mac (plume.amdiveev.ru/api/settings/<id>, синхронизация — tglite_ai.cpp).
 [[nodiscard]] QJsonObject SyncedSettings();
