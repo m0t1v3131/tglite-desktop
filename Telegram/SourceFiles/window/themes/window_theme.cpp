@@ -440,7 +440,24 @@ bool InitializeFromCache(
 		: std::nullopt;
 }
 
+// Plume: built-in themes are read from resources every time, so that
+// a new build brings its own colors instead of a saved copy of Telegram ones.
+void RefreshEmbeddedContent(Saved &saved) {
+	const auto &path = saved.object.pathAbsolute;
+	if (path.isEmpty() || !IsEmbeddedTheme(path)) {
+		return;
+	}
+	auto file = QFile(path);
+	if (file.open(QIODevice::ReadOnly)) {
+		auto content = file.readAll();
+		if (content.size() >= 4) {
+			saved.object.content = std::move(content);
+		}
+	}
+}
+
 bool InitializeFromSaved(Saved &&saved) {
+	RefreshEmbeddedContent(saved);
 	if (saved.object.content.size() < 4) {
 		LOG(("Theme Error: Could not load theme from '%1' (%2)").arg(
 			saved.object.pathRelative,
@@ -1255,6 +1272,7 @@ void ChatBackground::reapplyWithNightMode(
 	const auto oldNightMode = _nightMode;
 	_nightMode = newNightMode;
 	auto read = settingExactTheme ? Saved() : Local::readThemeAfterSwitch();
+	RefreshEmbeddedContent(read);
 	auto path = read.object.pathAbsolute;
 
 	_nightMode = oldNightMode;

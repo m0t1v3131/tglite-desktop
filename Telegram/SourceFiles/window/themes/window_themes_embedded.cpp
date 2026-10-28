@@ -240,37 +240,37 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 	};
 	return {
 		EmbeddedScheme{
-			EmbeddedType::Default,
-			qColor("9bd494"),
-			qColor("eaffdc"),
-			qColor("ffffff"),
-			qColor("eaffdc"),
-			qColor("ffffff"),
+			EmbeddedType::Default, // Plume: paper.
+			qColor("ece5d6"),
+			qColor("3e5f95"),
+			qColor("fbf9f5"),
+			qColor("c9c1b2"),
+			qColor("3e5f95"),
 			name(tr::lng_settings_theme_classic),
 			QString(),
-			qColor("40a7e3")
+			qColor("3e5f95")
 		},
 		EmbeddedScheme{
-			EmbeddedType::DayBlue,
-			qColor("7ec4ea"),
-			qColor("d7f0ff"),
-			qColor("ffffff"),
-			qColor("d7f0ff"),
-			qColor("ffffff"),
+			EmbeddedType::DayBlue, // Plume: paper, plain background.
+			qColor("fbf9f5"),
+			qColor("3e5f95"),
+			qColor("efeae0"),
+			qColor("c9c1b2"),
+			qColor("3e5f95"),
 			name(tr::lng_settings_theme_day),
 			":/gui/day-blue.tdesktop-theme",
 			qColor("40a7e3")
 		},
 		EmbeddedScheme{
-			EmbeddedType::Night,
-			qColor("485761"),
-			qColor("5ca7d4"),
-			qColor("6b808d"),
-			qColor("6b808d"),
-			qColor("5ca7d4"),
+			EmbeddedType::Night, // Plume: graphite and gold.
+			qColor("211f1b"),
+			qColor("3d3526"),
+			qColor("2a2823"),
+			qColor("4a463e"),
+			qColor("d4b26a"),
 			name(tr::lng_settings_theme_tinted),
 			":/gui/night.tdesktop-theme",
-			qColor("5288c1")
+			qColor("a8843f")
 		},
 		EmbeddedScheme{
 			EmbeddedType::NightGreen,
