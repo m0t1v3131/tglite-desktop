@@ -942,7 +942,7 @@ private:
 			auto names = QStringList();
 			for (const auto &history : ids(u"user_ids"_q)) {
 				const auto user = history->peer->asUser();
-				if (user && !user->isSelf() && !ranges::contains(users, user)) {
+				if (user && !user->isSelf() && !ranges::contains(users, not_null<UserData*>(user))) {
 					users.push_back(user);
 					names.push_back(user->name());
 				}
