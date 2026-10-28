@@ -135,6 +135,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_share_box.h"
 #include "styles/style_window.h" // st::windowMinWidth
 #include "styles/style_menu_icons.h"
+#include "tglite/tglite_ai.h"
 #include "styles/style_premium.h"
 #include "styles/style_wallet.h"
 
@@ -1911,6 +1912,14 @@ void Filler::fillContextMenuActions() {
 		return;
 	}
 	addNewWindow();
+	// Плюм: правый клик по чату → помощник сразу про этот чат (добавить в группу, рассылка, папка…)
+	if (_peer && !_peer->isSelf() && !_request.key.topic()) {
+		const auto peer = _peer;
+		const auto controller = _controller;
+		_addAction(u"Спросить помощника"_q, [=] {
+			TgLite::ShowAssistantForChat(controller, peer, MsgId(), QString());
+		}, &st::menuIconBot);
+	}
 	addUngroup();
 	addHidePromotion();
 	addToggleArchive();

@@ -17,6 +17,7 @@ Licensed under GNU GPL v. 3.
 #include "window/window_controller.h"
 #include "api/api_common.h"
 #include "api/api_sending.h"
+#include "api/api_chat_participants.h"
 #include "data/data_document.h"
 #include "data/data_histories.h"
 #include "data/data_media_types.h"
@@ -208,6 +209,16 @@ QJsonArray Tools() {
 			{ { u"chat_id"_q, Prop(u"string"_q, u"id группы из list_chats"_q) },
 			  { u"limit"_q, Prop(u"integer"_q, u"сколько, по умолчанию 200, максимум 1000"_q) } },
 			{ u"chat_id"_q }),
+		Tool(u"add_to_group"_q,
+			u"Добавить людей в группу (пользователь подтверждает). Группу найди через list_chats."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id группы из list_chats"_q) },
+			  { u"user_ids"_q, IdsProp(u"id людей (личные чаты, group_members)"_q) } },
+			{ u"chat_id"_q, u"user_ids"_q }),
+		Tool(u"create_group"_q,
+			u"Создать новую группу с людьми (пользователь подтверждает)."_q,
+			{ { u"title"_q, Prop(u"string"_q, u"название группы"_q) },
+			  { u"user_ids"_q, IdsProp(u"id людей"_q) } },
+			{ u"title"_q, u"user_ids"_q }),
 		Tool(u"broadcast"_q,
 			u"Каждому лично: переслать сообщение и/или написать текст в несколько чатов или людям (id из list_chats или group_members). "
 			u"≤25 за раз, ≤60 в сутки, паузы 25–60 с; пользователь подтверждает. Нужен text, или forward_*, или оба (сначала пересылка, потом текст)."_q,
@@ -267,6 +278,7 @@ QString SystemPrompt() {
 		+ QDateTime::currentDateTime().toString(u"dd.MM.yyyy HH:mm"_q) + u". "
 		u"Отвечай по-русски, коротко и просто, обращайся на «вы». Делай то, что просят, с помощью инструментов: "
 		u"находи чаты через list_chats, папки — list_folders, создавай и меняй папки, читай сообщения (у каждого есть #номер), отправляй. "
+		u"Добавить людей в существующую группу — add_to_group, новая группа с людьми — create_group. "
 		u"Если просят написать или переслать что-то всем участникам группы лично: найди группу (list_chats), "
 		u"нужное сообщение (read_messages, его #номер), участников (group_members), затем broadcast с их id — "
 		u"forward_from_chat_id и forward_message_id, чтобы переслать сообщение, и text — что дописать от себя. "
@@ -925,6 +937,78 @@ private:
 			}
 			add(u"· смотрю участников «"_q + history->peer->name() + u"»"_q);
 			members(history->peer, std::clamp(input.value(u"limit"_q).toInt(200), 1, 1000), done);
+		} else if (name == u"add_to_group"_q || name == u"create_group"_q) {
+			auto users = std::vector<not_null<UserData*>>();
+			auto names = QStringList();
+			for (const auto &history : ids(u"user_ids"_q)) {
+				const auto user = history->peer->asUser();
+				if (user && !user->isSelf() && !ranges::contains(users, user)) {
+					users.push_back(user);
+					names.push_back(user->name());
+				}
+			}
+			if (users.empty()) {
+				done(u"нет таких людей (нужны id из личных чатов или group_members)"_q, true);
+				return;
+			} else if (users.size() > 25) {
+				done(u"за раз — не больше 25 человек"_q, true);
+				return;
+			}
+			if (name == u"add_to_group"_q) {
+				const auto history = FindChat(_session, input.value(u"chat_id"_q).toVariant().toString());
+				const auto peer = history ? history->peer.get() : nullptr;
+				if (!peer || peer->isUser() || peer->isBroadcast()) {
+					done(u"это не группа"_q, true);
+					return;
+				}
+				confirm(
+					u"Добавить в «"_q + peer->name() + u"»: "_q + names.join(u", "_q) + u"?"_q,
+					[=] {
+						add(u"· добавляю в «"_q + peer->name() + u"»"_q);
+						_session->api().chatParticipants().add(
+							_controller->uiShow(),
+							peer,
+							users,
+							true,
+							[=](bool ok) {
+								done(ok
+									? u"добавлены: "_q + names.join(u", "_q)
+									: u"не добавлены (Telegram показал причину: приватность или нет прав)"_q, !ok);
+							});
+					},
+					[=] { done(u"пользователь отменил"_q, false); });
+				return;
+			}
+			const auto title = input.value(u"title"_q).toString().trimmed();
+			if (title.isEmpty()) {
+				done(u"нужно название группы"_q, true);
+				return;
+			}
+			confirm(
+				u"Создать группу «"_q + title + u"»: "_q + names.join(u", "_q) + u"?"_q,
+				[=] {
+					add(u"· создаю группу «"_q + title + u"»"_q);
+					auto inputs = QVector<MTPInputUser>();
+					for (const auto &user : users) {
+						inputs.push_back(user->inputUser());
+					}
+					const auto session = _session;
+					session->api().request(MTPmessages_CreateChat(
+						MTP_flags(0),
+						MTP_vector<MTPInputUser>(inputs),
+						MTP_string(title),
+						MTPint()
+					)).done([=](const MTPmessages_InvitedUsers &result) {
+						const auto &data = result.data();
+						session->api().applyUpdates(data.vupdates());
+						const auto missing = int(data.vmissing_invitees().v.size());
+						done(u"группа создана"_q
+							+ (missing ? u"; не добавились (приватность): "_q + QString::number(missing) : QString()), false);
+					}).fail([=](const MTP::Error &error) {
+						done(u"группа не создана: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
 		} else if (name == u"broadcast"_q) {
 			const auto from = FindChat(_session, input.value(u"forward_from_chat_id"_q).toVariant().toString());
 			const auto fromId = MsgId(input.value(u"forward_message_id"_q).toInt());
@@ -1933,6 +2017,14 @@ void Assistant::showWindow() {
 			chip(u"Разослать участникам"_q, [=] { fill(u"Напиши каждому участнику "_q + name + u" в личку: "_q); });
 		}
 		chip(u"Написать сюда"_q, [=] { fill(u"Напиши в "_q + name + u": "_q); });
+		if (!_chatMsg) {
+			if (!group) {
+				chip(u"Добавить в группу"_q, [=] { fill(u"Добавь "_q + name + u" в группу "_q); });
+				chip(u"В рассылку"_q, [=] { fill(u"Сделай рассылку: "_q + name + u" и "_q); });
+				chip(u"В базу людей"_q, [=] { fill(u"Добавь "_q + name + u" в мою базу людей, он(а): "_q); });
+			}
+			chip(u"В папку"_q, [=] { fill(u"Добавь "_q + name + u" в папку "_q); });
+		}
 		chip(u"В Маяк"_q, [=] { fill(u"Поставь задачу в Маяк по "_q + (_chatMsg ? u"этому сообщению"_q : u"этому чату"_q) + u": "_q); });
 		chip(u"Сводка чата"_q, [=] { askNow(u"Коротко перескажи последние сообщения в "_q + name + u": о чём говорят и что ждут от меня."_q); });
 		if (group) {
