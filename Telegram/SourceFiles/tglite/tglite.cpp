@@ -16,6 +16,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "api/api_updates.h"
 #include "api/api_user_privacy.h"
 #include "apiwrap.h"
+#include "calls/calls_instance.h"
 #include "boxes/peer_list_controllers.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -28,6 +29,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "dialogs/dialogs_main_list.h"
 #include "dialogs/dialogs_row.h"
 #include "history/history.h"
+#include "media/audio/media_audio_capture.h"
 #include "history/history_item.h"
 #include "history/history_unread_things.h"
 #include "main/main_account.h"
@@ -1485,7 +1487,24 @@ rpl::producer<bool> UpdateReadyValue() {
 	return UpdateReadyVariable().value();
 }
 
-void CheckUpdates(bool manual) {
+void UpdateNow() {
+	const auto window = Core::App().activePrimaryWindow();
+	const auto capture = ::Media::Capture::instance();
+	if (Core::App().calls().inCall()
+		|| Core::App().calls().inGroupCall()
+		|| (capture && capture->started())) {
+		if (window) {
+			window->showToast(u"Обновлю после звонка или записи"_q);
+		}
+		return;
+	}
+	if (window) {
+		window->showToast(u"Проверяю обновления…"_q);
+	}
+	CheckUpdates(true, true);
+}
+
+void CheckUpdates(bool manual, bool install) {
 	static auto checking = false;
 	if (checking) return;
 	checking = true;
@@ -1534,7 +1553,9 @@ void CheckUpdates(bool manual) {
 				.notes = notes,
 			};
 			UpdateReadyVariable() = true;
-			if (manual) {
+			if (install) {
+				InstallUpdate(Pending().url);
+			} else if (manual) {
 				OfferUpdate(Pending().url, PendingNotesText());
 			}
 		} else {

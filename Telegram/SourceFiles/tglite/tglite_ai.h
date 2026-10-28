@@ -51,6 +51,11 @@ void ShowAssistantForChat(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
 
+// Круглая кнопка ↻ «Обновить» левее шестерёнки: своя новая версия Плюма в одно нажатие.
+[[nodiscard]] Ui::AbstractButton *CreateRefreshButton(
+	not_null<QWidget*> parent,
+	not_null<Window::SessionController*> controller);
+
 // Маяк внутри Плюма: мини-приложение бота @mayak52_bot (mayak.amdiveev.ru, вход по Telegram без пароля).
 void OpenMayak(not_null<Window::SessionController*> controller);
 // «В Маяк» у сообщения: новый чат в Маяке с этим сообщением (и его фото/файлом) — сообщением «чат: …» своему боту.

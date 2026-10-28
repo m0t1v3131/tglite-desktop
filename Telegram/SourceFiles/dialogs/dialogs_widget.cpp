@@ -685,6 +685,9 @@ Widget::Widget(
 		_plume = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreateTaktButton(_searchControls, controller));
 		_plume->show();
+		_plumeRefresh = object_ptr<Ui::AbstractButton>::fromRaw(
+			TgLite::CreateRefreshButton(_searchControls, controller));
+		_plumeRefresh->show();
 		_plumeSettings = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreatePlumeSettingsButton(_searchControls, controller));
 		_plumeSettings->show();
@@ -4570,6 +4573,7 @@ void Widget::updateControlsGeometry() {
 	const auto filterRight = st::dialogsFilterSkip
 		+ st::dialogsFilterPadding.x();
 	const auto plumeWidth = (_plume ? _plume->width() : 0)
+		+ (_plumeRefresh ? _plumeRefresh->width() : 0)
 		+ (_plumeSettings ? _plumeSettings->width() : 0)
 		+ (_mayak ? _mayak->width() : 0);
 	const auto filterWidth = std::max(ratiow, smallw)
@@ -4613,9 +4617,17 @@ void Widget::updateControlsGeometry() {
 		searchLeft,
 		st::dialogsFilterPadding.y());
 
+	const auto refreshWidth = _plumeRefresh ? _plumeRefresh->width() : 0;
+	if (_plumeRefresh) {
+		_plumeRefresh->moveToLeft(
+			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2,
+			st::dialogsFilterPadding.y());
+		_plumeRefresh->setVisible(narrowRatio == 0.);
+	}
 	if (_plumeSettings) {
 		_plumeSettings->moveToLeft(
-			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2,
+			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2
+				+ refreshWidth,
 			st::dialogsFilterPadding.y());
 		_plumeSettings->setVisible(narrowRatio == 0.);
 	}
@@ -4624,6 +4636,7 @@ void Widget::updateControlsGeometry() {
 			filterLeft
 				+ filterWidth
 				+ st::dialogsFilterPadding.x() / 2
+				+ refreshWidth
 				+ (_plumeSettings ? _plumeSettings->width() : 0),
 			st::dialogsFilterPadding.y());
 		_mayak->setVisible(narrowRatio == 0.);
@@ -4633,6 +4646,7 @@ void Widget::updateControlsGeometry() {
 			filterLeft
 				+ filterWidth
 				+ st::dialogsFilterPadding.x() / 2
+				+ refreshWidth
 				+ (_plumeSettings ? _plumeSettings->width() : 0)
 				+ (_mayak ? _mayak->width() : 0),
 			st::dialogsFilterPadding.y());

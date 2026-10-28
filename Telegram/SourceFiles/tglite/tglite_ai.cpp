@@ -2633,6 +2633,50 @@ protected:
 
 };
 
+// ↻ «Обновить» левее шестерёнки: дуга со стрелкой цветом значков меню.
+class RefreshButton final : public Ui::AbstractButton {
+public:
+	explicit RefreshButton(QWidget *parent) : AbstractButton(parent) {
+		setCursor(style::cur_pointer);
+		resize(st::dialogsLock.height, st::dialogsLock.height);
+		setToolTip(u"Обновить Плюм"_q);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		if (isOver()) {
+			const auto h = std::min(height(), style::ConvertScale(30));
+			p.setPen(Qt::NoPen);
+			p.setBrush(st::windowBgOver);
+			p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
+		}
+		const auto u = style::ConvertScale(1.);
+		const auto color = st::menuIconColor->c;
+		const auto r = 7 * u;
+		const auto c = QPointF(width() / 2., height() / 2.);
+		auto pen = QPen(color);
+		pen.setWidthF(1.6 * u);
+		pen.setCapStyle(Qt::RoundCap);
+		p.setPen(pen);
+		p.setBrush(Qt::NoBrush);
+		// дуга почти по кругу с просветом справа вверху, стрелка — на её конце (как на Android)
+		p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), 28 * 16, 319 * 16);
+		p.setPen(Qt::NoPen);
+		p.setBrush(color);
+		p.drawPolygon(QPolygonF(QVector<QPointF>{
+			c + QPointF(7.4 * u, -8.1 * u),
+			c + QPointF(7.7 * u, -2.2 * u),
+			c + QPointF(1.9 * u, -2.9 * u) }));
+	}
+
+	void onStateChanged(State was, StateChangeSource source) override {
+		update();
+	}
+
+};
+
 // Маяк рядом с «Помощником»: башня с лучами.
 class MayakButton final : public Ui::AbstractButton {
 public:
@@ -2843,6 +2887,17 @@ void ShowSendToMayak(
 		box->addButton(rpl::single(u"Отправить"_q), submit);
 		box->addButton(rpl::single(u"Отмена"_q), [=] { box->closeBox(); });
 	}));
+}
+
+Ui::AbstractButton *CreateRefreshButton(
+		not_null<QWidget*> parent,
+		not_null<Window::SessionController*> controller) {
+	const auto result = new RefreshButton(parent);
+	result->setAccessibleName(u"Обновить Плюм"_q);
+	result->setClickedCallback([] {
+		UpdateNow();
+	});
+	return result;
 }
 
 Ui::AbstractButton *CreatePlumeSettingsButton(

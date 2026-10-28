@@ -22,11 +22,13 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26102823;
+inline constexpr auto kBuild = 26102900;
 
 void Start();
 void Stop();
-void CheckUpdates(bool manual);
+void CheckUpdates(bool manual, bool install = false);
+// Кнопка ↻ над чатами: проверить и сразу поставить новую версию (не во время звонка или записи голосового).
+void UpdateNow();
 // Обновления копятся: сами не ставятся и не всплывают, только точка на шестерёнке и список в Настройках Плюма.
 [[nodiscard]] bool UpdateReady();
 [[nodiscard]] rpl::producer<bool> UpdateReadyValue();
