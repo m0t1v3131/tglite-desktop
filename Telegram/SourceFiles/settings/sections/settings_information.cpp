@@ -993,8 +993,10 @@ void AccountsList::setup() {
 		return count > 0;
 	}));
 	_hiddenAccounts->entity()->setClickedCallback([=] {
+		// Closing the menu destroys `this`, so keep the controller first.
+		const auto controller = _controller;
 		_closeRequests.fire({});
-		TgLite::ShowHiddenAccountsBox(_controller);
+		TgLite::ShowHiddenAccountsBox(controller);
 	});
 	TgLite::HiddenAccountsChanges(
 	) | rpl::on_next([=] {
