@@ -18,6 +18,12 @@ Licensed under GNU GPL v. 3.
 #include "api/api_common.h"
 #include "api/api_sending.h"
 #include "api/api_chat_participants.h"
+#include "api/api_blocked_peers.h"
+#include "api/api_chat_filters.h"
+#include "api/api_chat_invite.h"
+#include "data/data_chat_participant_status.h"
+#include "data/notify/data_notify_settings.h"
+#include "data/notify/data_peer_notify_settings.h"
 #include "data/data_document.h"
 #include "data/data_histories.h"
 #include "data/data_media_types.h"
@@ -169,8 +175,11 @@ QJsonObject IdsProp(const QString &description) {
 QJsonArray Tools() {
 	return QJsonArray{
 		Tool(u"list_chats"_q,
-			u"Список чатов (включая архив): id, название, тип, непрочитанные. Можно искать по части названия."_q,
+			u"Список чатов (включая архив): id, название, тип, непрочитанные, отметки «закреплён», «без звука», «архив». "
+			u"Можно искать по части названия, только непрочитанные или только чаты папки."_q,
 			{ { u"query"_q, Prop(u"string"_q, u"часть названия, необязательно"_q) },
+			  { u"unread_only"_q, Prop(u"boolean"_q, u"только с непрочитанными"_q) },
+			  { u"folder_id"_q, Prop(u"integer"_q, u"только чаты этой папки (list_folders)"_q) },
 			  { u"limit"_q, Prop(u"integer"_q, u"сколько вернуть, по умолчанию 50"_q) } }),
 		Tool(u"list_folders"_q,
 			u"Список папок: id, название, сколько чатов добавлено вручную."_q,
@@ -270,6 +279,142 @@ QJsonArray Tools() {
 			{ { u"chat_id"_q, Prop(u"integer"_q, u"id чата Такта"_q) },
 			  { u"mode"_q, Prop(u"string"_q, u"allegro | adagio | pause | never | пусто"_q) } },
 			{ u"chat_id"_q, u"mode"_q }),
+		Tool(u"pin_chat"_q,
+			u"Закрепить чат наверху списка (или в папке folder_id) или открепить (unpin)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата, @имя или me (Избранное)"_q) },
+			  { u"folder_id"_q, Prop(u"integer"_q, u"закрепить внутри папки, необязательно"_q) },
+			  { u"unpin"_q, Prop(u"boolean"_q, u"открепить"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"archive_chat"_q,
+			u"Убрать чат в архив или вернуть из архива (unarchive)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"unarchive"_q, Prop(u"boolean"_q, u"вернуть из архива"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"mute_chat"_q,
+			u"Выключить звук чата (на hours часов или навсегда) или включить обратно (unmute)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"hours"_q, Prop(u"integer"_q, u"на сколько часов; не указано — навсегда"_q) },
+			  { u"unmute"_q, Prop(u"boolean"_q, u"включить звук"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"mark_read"_q,
+			u"Отметить чаты прочитанными (или непрочитанными — unread). all — все чаты с непрочитанными."_q,
+			{ { u"chat_ids"_q, IdsProp(u"id чатов"_q) },
+			  { u"all"_q, Prop(u"boolean"_q, u"все непрочитанные чаты"_q) },
+			  { u"unread"_q, Prop(u"boolean"_q, u"наоборот, пометить непрочитанными"_q) } }),
+		Tool(u"open_chat"_q,
+			u"Открыть чат в окне Плюма (можно сразу на сообщении)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"message_id"_q, Prop(u"integer"_q, u"#номер сообщения, необязательно"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"delete_folder"_q,
+			u"Удалить папку (чаты остаются; пользователь подтверждает)."_q,
+			{ { u"folder_id"_q, Prop(u"integer"_q, u"id папки из list_folders"_q) } },
+			{ u"folder_id"_q }),
+		Tool(u"search_messages"_q,
+			u"Поиск сообщений по словам: в одном чате (chat_id) или во всех чатах сразу."_q,
+			{ { u"query"_q, Prop(u"string"_q, u"что искать"_q) },
+			  { u"chat_id"_q, Prop(u"string"_q, u"где искать, необязательно — иначе везде"_q) },
+			  { u"limit"_q, Prop(u"integer"_q, u"сколько, по умолчанию 20, максимум 50"_q) } },
+			{ u"query"_q }),
+		Tool(u"edit_message"_q,
+			u"Изменить текст своего сообщения (пользователь подтверждает)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"message_id"_q, Prop(u"integer"_q, u"#номер сообщения"_q) },
+			  { u"text"_q, Prop(u"string"_q, u"новый текст"_q) } },
+			{ u"chat_id"_q, u"message_id"_q, u"text"_q }),
+		Tool(u"delete_messages"_q,
+			u"Удалить сообщения (пользователь подтверждает). for_everyone — у всех, иначе только у себя."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"message_ids"_q, IdsProp(u"#номера сообщений"_q) },
+			  { u"for_everyone"_q, Prop(u"boolean"_q, u"удалить у всех"_q) } },
+			{ u"chat_id"_q, u"message_ids"_q }),
+		Tool(u"pin_message"_q,
+			u"Закрепить сообщение в чате или открепить (unpin); пользователь подтверждает."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"message_id"_q, Prop(u"integer"_q, u"#номер сообщения"_q) },
+			  { u"unpin"_q, Prop(u"boolean"_q, u"открепить"_q) },
+			  { u"silent"_q, Prop(u"boolean"_q, u"без уведомления участникам"_q) } },
+			{ u"chat_id"_q, u"message_id"_q }),
+		Tool(u"react"_q,
+			u"Поставить реакцию-эмодзи на сообщение (пустая строка — убрать)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"message_id"_q, Prop(u"integer"_q, u"#номер сообщения"_q) },
+			  { u"emoji"_q, Prop(u"string"_q, u"например 👍 ❤ 🔥 🎉 😁 🙏 👌"_q) } },
+			{ u"chat_id"_q, u"message_id"_q, u"emoji"_q }),
+		Tool(u"clear_history"_q,
+			u"Очистить историю чата (пользователь подтверждает). for_everyone — у обоих (только личные и группы)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"for_everyone"_q, Prop(u"boolean"_q, u"у всех"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"delete_chat"_q,
+			u"Удалить чат / выйти из группы или канала (пользователь подтверждает)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"for_everyone"_q, Prop(u"boolean"_q, u"в личном чате — удалить и у собеседника"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"join_chat"_q,
+			u"Вступить в группу или канал по ссылке t.me/…, t.me/+код или @имени."_q,
+			{ { u"link"_q, Prop(u"string"_q, u"ссылка или @имя"_q) } },
+			{ u"link"_q }),
+		Tool(u"rename_chat"_q,
+			u"Переименовать группу или канал (нужны права; пользователь подтверждает)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"title"_q, Prop(u"string"_q, u"новое название"_q) } },
+			{ u"chat_id"_q, u"title"_q }),
+		Tool(u"set_chat_about"_q,
+			u"Изменить описание группы или канала (пользователь подтверждает)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"about"_q, Prop(u"string"_q, u"описание"_q) } },
+			{ u"chat_id"_q, u"about"_q }),
+		Tool(u"remove_member"_q,
+			u"Удалить человека из группы или канала (пользователь подтверждает)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id группы"_q) },
+			  { u"user_id"_q, Prop(u"string"_q, u"id человека"_q) } },
+			{ u"chat_id"_q, u"user_id"_q }),
+		Tool(u"set_admin"_q,
+			u"Назначить человека админом группы/канала или снять (remove); пользователь подтверждает."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id группы"_q) },
+			  { u"user_id"_q, Prop(u"string"_q, u"id человека"_q) },
+			  { u"rank"_q, Prop(u"string"_q, u"подпись админа, необязательно"_q) },
+			  { u"remove"_q, Prop(u"boolean"_q, u"снять админа"_q) } },
+			{ u"chat_id"_q, u"user_id"_q }),
+		Tool(u"invite_link"_q,
+			u"Ссылка-приглашение в группу или канал."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"create_channel"_q,
+			u"Создать канал или супергруппу без участников (пользователь подтверждает). Людей потом — add_to_group."_q,
+			{ { u"title"_q, Prop(u"string"_q, u"название"_q) },
+			  { u"about"_q, Prop(u"string"_q, u"описание, необязательно"_q) },
+			  { u"type"_q, Prop(u"string"_q, u"channel | group"_q) } },
+			{ u"title"_q, u"type"_q }),
+		Tool(u"find_user"_q,
+			u"Найти человека, группу, канал или бота в Telegram — по @имени, ссылке или по имени (контакты и общий поиск)."_q,
+			{ { u"query"_q, Prop(u"string"_q, u"@имя, t.me/… или имя"_q) } },
+			{ u"query"_q }),
+		Tool(u"user_info"_q,
+			u"Подробно о человеке или чате: @имя, телефон, описание, участники, общие чаты, в контактах ли, заблокирован ли."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата или человека"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"block_user"_q,
+			u"Заблокировать человека или бота (или разблокировать — unblock); пользователь подтверждает."_q,
+			{ { u"user_id"_q, Prop(u"string"_q, u"id человека"_q) },
+			  { u"unblock"_q, Prop(u"boolean"_q, u"разблокировать"_q) } },
+			{ u"user_id"_q }),
+		Tool(u"add_contact"_q,
+			u"Добавить человека в контакты (или переименовать контакт)."_q,
+			{ { u"user_id"_q, Prop(u"string"_q, u"id человека"_q) },
+			  { u"first_name"_q, Prop(u"string"_q, u"имя"_q) },
+			  { u"last_name"_q, Prop(u"string"_q, u"фамилия, необязательно"_q) } },
+			{ u"user_id"_q, u"first_name"_q }),
+		Tool(u"delete_contact"_q,
+			u"Удалить человека из контактов (пользователь подтверждает)."_q,
+			{ { u"user_id"_q, Prop(u"string"_q, u"id человека"_q) } },
+			{ u"user_id"_q }),
+		Tool(u"update_profile"_q,
+			u"Изменить своё имя, фамилию или «О себе» (пользователь подтверждает). Не указанное не меняется."_q,
+			{ { u"first_name"_q, Prop(u"string"_q, u"имя"_q) },
+			  { u"last_name"_q, Prop(u"string"_q, u"фамилия"_q) },
+			  { u"about"_q, Prop(u"string"_q, u"о себе"_q) } }),
 	};
 }
 
@@ -293,7 +438,18 @@ QString SystemPrompt() {
 		u"Что сделано в Маяке, кто ждёт ответа — mayak_news (сообщения бота Маяка с #номерами); ответить в такой чат — mayak_reply на #номер его сообщения. "
 		u"Показать Маяк целиком — mayak_open. "
 		u"Перед отправкой, пересылкой и рассылкой клиент сам спросит подтверждение — не переспрашивай лишний раз. "
-		u"Рассылки только небольшие (до 25 чатов), это личный аккаунт — массовые рассылки могут привести к блокировке."_q;
+		u"Рассылки только небольшие (до 25 чатов), это личный аккаунт — массовые рассылки могут привести к блокировке. "
+		u"Ты умеешь в Telegram почти всё: закрепить/открепить чат (pin_chat, в т.ч. в папке), архив (archive_chat), звук (mute_chat), "
+		u"прочитано/непрочитано (mark_read), открыть чат на экране (open_chat), удалить папку (delete_folder), "
+		u"искать сообщения по всем чатам или в одном (search_messages — так находи старые переписки), "
+		u"изменить/удалить своё сообщение (edit_message, delete_messages), закрепить сообщение (pin_message), реакция (react), "
+		u"очистить историю или удалить чат/выйти (clear_history, delete_chat), вступить по ссылке или @имени (join_chat), "
+		u"переименовать группу/канал и описание (rename_chat, set_chat_about), удалить участника и назначить админа (remove_member, set_admin), "
+		u"ссылка-приглашение (invite_link), создать канал или группу (create_channel), найти человека/канал по имени или @нику (find_user), "
+		u"инфо о человеке или чате (user_info), блокировка (block_user), контакты (add_contact, delete_contact), свой профиль (update_profile). "
+		u"Везде, где нужен id чата или человека, можно писать @имя, ссылку t.me/имя или me (Избранное). "
+		u"Если человека или чата нет в list_chats — сначала find_user или join_chat. "
+		u"Необратимые и видимые другим действия клиент сам подтвердит у пользователя."_q;
 }
 
 QString PeerType(not_null<PeerData*> peer) {
@@ -321,15 +477,71 @@ std::vector<not_null<History*>> AllChats(not_null<Main::Session*> session) {
 	return result;
 }
 
+// «@имя» / t.me/имя → имя; иначе пусто.
+QString UsernameFrom(QString text) {
+	text = text.trimmed();
+	static const auto re = QRegularExpression(
+		u"^(?:@|(?:https?://)?(?:t|telegram)\\.me/)([A-Za-z0-9_]{4,32})/?$"_q);
+	const auto m = re.match(text);
+	return m.hasMatch() ? m.captured(1) : QString();
+}
+
 History *FindChat(not_null<Main::Session*> session, const QString &id) {
+	const auto text = id.trimmed();
+	if (text == u"me"_q || text == u"я"_q || text == u"избранное"_q) {
+		return session->data().history(session->user()).get();
+	}
+	if (const auto username = UsernameFrom(text); !username.isEmpty()) {
+		const auto peer = session->data().peerByUsername(username);
+		return peer ? session->data().history(peer).get() : nullptr;
+	}
 	auto ok = false;
-	const auto value = id.toULongLong(&ok);
+	const auto value = text.toULongLong(&ok);
 	const auto peer = ok ? session->data().peerLoaded(PeerId(PeerIdHelper(value))) : nullptr;
 	return peer ? session->data().history(peer).get() : nullptr;
 }
 
 QString ChatId(not_null<History*> history) {
 	return QString::number(history->peer->id.value);
+}
+
+// Сообщения из ответа поиска/истории: «#id дд.мм чч:мм кто: текст» (без history — с чатом и его id).
+QStringList FormatMessages(
+		not_null<Main::Session*> session,
+		const MTPmessages_Messages &result,
+		History *history) {
+	auto lines = QStringList();
+	result.match([](const MTPDmessages_messagesNotModified &) {
+	}, [&](const auto &data) {
+		session->data().processUsers(data.vusers());
+		session->data().processChats(data.vchats());
+		for (const auto &message : data.vmessages().v) {
+			message.match([&](const MTPDmessage &m) {
+				const auto where = session->data().peerLoaded(peerFromMTP(m.vpeer_id()));
+				auto from = QString();
+				if (const auto fromId = m.vfrom_id()) {
+					if (const auto peer = session->data().peerLoaded(peerFromMTP(*fromId))) {
+						from = peer->name();
+					}
+				} else if (m.is_out()) {
+					from = u"я"_q;
+				}
+				if (from.isEmpty() && where) {
+					from = where->name();
+				}
+				const auto date = QDateTime::fromSecsSinceEpoch(m.vdate().v);
+				lines.push_back(
+					((history || !where)
+						? QString()
+						: u"[«"_q + where->name() + u"» id "_q
+							+ QString::number(where->id.value) + u"] "_q)
+					+ u"#"_q + QString::number(m.vid().v) + u" "_q
+					+ date.toString(u"dd.MM.yy HH:mm"_q) + u" "_q
+					+ from + u": "_q + qs(m.vmessage()));
+			}, [](const auto &) {});
+		}
+	});
+	return lines;
 }
 
 // ---------- Маяк ----------
@@ -786,6 +998,46 @@ private:
 			const QString &name,
 			const QJsonObject &input,
 			Fn<void(QString, bool)> done) {
+		// @имя / t.me/имя, которых ещё нет в памяти клиента, — сначала узнаём у Telegram.
+		auto unknown = QString();
+		const auto checkName = [&](const QJsonValue &v) {
+			const auto username = UsernameFrom(v.toVariant().toString());
+			if (!username.isEmpty()
+				&& !_session->data().peerByUsername(username)
+				&& !_triedUsernames.contains(username.toLower())) {
+				unknown = username;
+			}
+		};
+		for (auto i = input.begin(); i != input.end(); ++i) {
+			if (!i.key().contains(u"id"_q) && i.key() != u"link"_q) {
+				continue;
+			} else if (i.value().isArray()) {
+				for (const auto &v : i.value().toArray()) {
+					checkName(v);
+				}
+			} else {
+				checkName(i.value());
+			}
+		}
+		if (!unknown.isEmpty()) {
+			_triedUsernames.emplace(unknown.toLower());
+			const auto session = _session;
+			session->api().request(MTPcontacts_ResolveUsername(
+				MTP_flags(MTPcontacts_ResolveUsername::Flag()),
+				MTP_string(unknown),
+				MTP_string(QString())
+			)).done([=](const MTPcontacts_ResolvedPeer &result) {
+				session->data().processUsers(result.data().vusers());
+				session->data().processChats(result.data().vchats());
+				run(name, input, done);
+			}).fail([=](const MTP::Error &) {
+				run(name, input, done);
+			}).send();
+			return;
+		}
+		const auto chat = [&](const QString &key) {
+			return FindChat(_session, input.value(key).toVariant().toString());
+		};
 		const auto ids = [&](const QString &key) {
 			auto result = std::vector<not_null<History*>>();
 			for (const auto &v : input.value(key).toArray()) {
@@ -799,15 +1051,37 @@ private:
 			add(u"· смотрю чаты"_q);
 			const auto query = input.value(u"query"_q).toString().toLower();
 			const auto limit = std::clamp(input.value(u"limit"_q).toInt(50), 1, 300);
+			const auto unreadOnly = input.value(u"unread_only"_q).toBool();
+			const auto folderId = FilterId(input.value(u"folder_id"_q).toInt());
+			const auto &filters = _session->data().chatsFilters().list();
+			const auto filter = ranges::find(filters, folderId, &Data::ChatFilter::id);
+			if (folderId && filter == end(filters)) {
+				done(u"нет такой папки"_q, true);
+				return;
+			}
 			auto lines = QStringList();
 			for (const auto history : AllChats(_session)) {
 				const auto title = history->peer->name();
 				if (!query.isEmpty() && !title.toLower().contains(query)) {
 					continue;
+				} else if (unreadOnly && !history->unreadCount() && !history->unreadMark()) {
+					continue;
+				} else if (folderId && !filter->contains(history)) {
+					continue;
+				}
+				auto marks = QString();
+				if (history->isPinnedDialog(folderId)) {
+					marks += u" | закреплён"_q;
+				}
+				if (_session->data().notifySettings().isMuted(history)) {
+					marks += u" | без звука"_q;
+				}
+				if (history->folder()) {
+					marks += u" | архив"_q;
 				}
 				lines.push_back(ChatId(history) + u" | "_q + title + u" | "_q
 					+ PeerType(history->peer) + u" | непрочитано "_q
-					+ QString::number(history->unreadCount()));
+					+ QString::number(history->unreadCount()) + marks);
 				if (lines.size() >= limit) {
 					break;
 				}
@@ -1018,6 +1292,682 @@ private:
 				(from && fromId) ? from->peer.get() : nullptr,
 				fromId,
 				done);
+		} else if (name == u"pin_chat"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			const auto owner = &_session->data();
+			const auto filterId = FilterId(input.value(u"folder_id"_q).toInt());
+			const auto pin = !input.value(u"unpin"_q).toBool();
+			if (filterId) {
+				const auto &filters = owner->chatsFilters().list();
+				const auto filter = ranges::find(filters, filterId, &Data::ChatFilter::id);
+				if (filter == end(filters)) {
+					done(u"нет такой папки"_q, true);
+					return;
+				} else if (!filter->contains(history)) {
+					done(u"чата нет в этой папке — сначала добавьте его через edit_folder"_q, true);
+					return;
+				}
+			}
+			if (history->isPinnedDialog(filterId) == pin) {
+				done(pin ? u"уже закреплён"_q : u"и так не закреплён"_q, false);
+				return;
+			} else if (pin && !owner->pinnedCanPin(filterId, history)) {
+				done(u"достигнут предел закреплённых чатов — сначала открепите какой-нибудь"_q, true);
+				return;
+			}
+			const auto okText = (pin ? u"закреплён: «"_q : u"откреплён: «"_q) + history->peer->name() + u"»"_q;
+			owner->setChatPinned(history, filterId, pin);
+			add(u"· "_q + okText);
+			if (filterId) {
+				Api::SaveNewFilterPinned(_session, filterId);
+				done(okText, false);
+				return;
+			}
+			using Flag = MTPmessages_ToggleDialogPin::Flag;
+			_session->api().request(MTPmessages_ToggleDialogPin(
+				MTP_flags(pin ? Flag::f_pinned : Flag(0)),
+				MTP_inputDialogPeer(history->peer->input())
+			)).done([=] {
+				owner->notifyPinnedDialogsOrderUpdated();
+				done(okText, false);
+			}).fail([=](const MTP::Error &error) {
+				owner->setChatPinned(history, FilterId(), !pin);
+				done(u"Telegram отказал: "_q + error.type(), true);
+			}).send();
+		} else if (name == u"archive_chat"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			const auto archive = !input.value(u"unarchive"_q).toBool();
+			const auto title = history->peer->name();
+			_session->api().toggleHistoryArchived(history, archive, [=] {
+				add((archive ? u"· в архиве: «"_q : u"· из архива: «"_q) + title + u"»"_q);
+				done(archive ? u"чат в архиве"_q : u"чат возвращён из архива"_q, false);
+			});
+		} else if (name == u"mute_chat"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			const auto unmute = input.value(u"unmute"_q).toBool();
+			const auto hours = std::clamp(input.value(u"hours"_q).toInt(0), 0, 24 * 365);
+			_session->data().notifySettings().update(history->peer, Data::MuteValue{
+				.unmute = unmute,
+				.forever = !unmute && !hours,
+				.period = unmute ? 0 : hours * 3600,
+			});
+			const auto text = unmute
+				? u"звук включён"_q
+				: hours
+				? u"без звука на "_q + QString::number(hours) + u" ч"_q
+				: u"без звука навсегда"_q;
+			add(u"· «"_q + history->peer->name() + u"»: "_q + text);
+			done(text, false);
+		} else if (name == u"mark_read"_q) {
+			const auto unread = input.value(u"unread"_q).toBool();
+			auto list = ids(u"chat_ids"_q);
+			if (input.value(u"all"_q).toBool() && !unread) {
+				for (const auto history : AllChats(_session)) {
+					if (history->unreadCount() || history->unreadMark()) {
+						list.push_back(history);
+					}
+				}
+			}
+			if (list.empty()) {
+				done(u"нечего отмечать"_q, false);
+				return;
+			}
+			auto &histories = _session->data().histories();
+			for (const auto history : list) {
+				if (unread) {
+					histories.changeDialogUnreadMark(history, true);
+				} else {
+					histories.readInbox(history);
+					if (history->unreadMark()) {
+						histories.changeDialogUnreadMark(history, false);
+					}
+				}
+			}
+			const auto text = (unread ? u"отмечено непрочитанными: "_q : u"прочитано чатов: "_q)
+				+ QString::number(list.size());
+			add(u"· "_q + text);
+			done(text, false);
+		} else if (name == u"open_chat"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			const auto msgId = MsgId(input.value(u"message_id"_q).toInt());
+			_controller->showPeerHistory(
+				history,
+				Window::SectionShow::Way::ClearStack,
+				msgId ? msgId : ShowAtUnreadMsgId);
+			done(u"открыт «"_q + history->peer->name() + u"»"_q, false);
+		} else if (name == u"delete_folder"_q) {
+			const auto id = FilterId(input.value(u"folder_id"_q).toInt());
+			const auto &filters = _session->data().chatsFilters().list();
+			const auto filter = ranges::find(filters, id, &Data::ChatFilter::id);
+			if (!id || filter == end(filters)) {
+				done(u"нет такой папки"_q, true);
+				return;
+			}
+			const auto title = filter->titleText().text;
+			confirm(
+				u"Удалить папку «"_q + title + u"»? Чаты останутся."_q,
+				[=] {
+					_session->data().chatsFilters().remove(id);
+					_session->api().request(MTPmessages_UpdateDialogFilter(
+						MTP_flags(0),
+						MTP_int(id),
+						MTPDialogFilter()
+					)).done([=] {
+						done(u"папка удалена"_q, false);
+					}).fail([=](const MTP::Error &error) {
+						_session->data().chatsFilters().reload();
+						done(u"Telegram отказал: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"search_messages"_q) {
+			const auto query = input.value(u"query"_q).toString().trimmed();
+			const auto limit = std::clamp(input.value(u"limit"_q).toInt(20), 1, 50);
+			const auto where = input.value(u"chat_id"_q).toVariant().toString();
+			const auto history = where.isEmpty() ? nullptr : chat(u"chat_id"_q);
+			if (query.isEmpty() || (!where.isEmpty() && !history)) {
+				done(u"нужен текст поиска (и существующий чат, если указан)"_q, true);
+				return;
+			}
+			add(u"· ищу «"_q + query + u"»"_q + (history ? u" в «"_q + history->peer->name() + u"»"_q : QString()));
+			const auto session = _session;
+			const auto finish = [=](const MTPmessages_Messages &result) {
+				const auto lines = FormatMessages(session, result, history);
+				done(lines.isEmpty() ? u"ничего не нашлось"_q : lines.join('\n'), false);
+			};
+			const auto fail = [=](const MTP::Error &error) {
+				done(u"поиск не удался: "_q + error.type(), true);
+			};
+			if (history) {
+				session->api().request(MTPmessages_Search(
+					MTP_flags(0),
+					history->peer->input(),
+					MTP_string(query),
+					MTP_inputPeerEmpty(),
+					MTP_inputPeerEmpty(),
+					MTPVector<MTPReaction>(),
+					MTP_int(0),
+					MTP_inputMessagesFilterEmpty(),
+					MTP_int(0),
+					MTP_int(0),
+					MTP_int(0),
+					MTP_int(0),
+					MTP_int(limit),
+					MTP_int(0),
+					MTP_int(0),
+					MTP_long(0)
+				)).done(finish).fail(fail).send();
+			} else {
+				session->api().request(MTPmessages_SearchGlobal(
+					MTP_flags(0),
+					MTP_int(0),
+					MTPInputChannel(),
+					MTP_string(query),
+					MTP_inputMessagesFilterEmpty(),
+					MTP_int(0),
+					MTP_int(0),
+					MTP_int(0),
+					MTP_inputPeerEmpty(),
+					MTP_int(0),
+					MTP_int(limit)
+				)).done(finish).fail(fail).send();
+			}
+		} else if (name == u"edit_message"_q) {
+			const auto history = chat(u"chat_id"_q);
+			const auto messageId = input.value(u"message_id"_q).toInt();
+			const auto text = input.value(u"text"_q).toString();
+			if (!history || !messageId || text.trimmed().isEmpty()) {
+				done(u"нет такого чата, сообщения или пустой текст"_q, true);
+				return;
+			}
+			confirm(
+				u"Изменить сообщение #"_q + QString::number(messageId) + u" в «"_q
+					+ history->peer->name() + u"» на:\n\n"_q + text,
+				[=] {
+					const auto session = _session;
+					session->api().request(MTPmessages_EditMessage(
+						MTP_flags(MTPmessages_EditMessage::Flag::f_message),
+						history->peer->input(),
+						MTP_int(messageId),
+						MTP_string(text),
+						MTPInputMedia(),
+						MTPReplyMarkup(),
+						MTPVector<MTPMessageEntity>(),
+						MTP_int(0),
+						MTP_int(0),
+						MTP_int(0),
+						MTPInputRichMessage()
+					)).done([=](const MTPUpdates &result) {
+						session->api().applyUpdates(result);
+						done(u"изменено"_q, false);
+					}).fail([=](const MTP::Error &error) {
+						done(u"не изменено: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"delete_messages"_q) {
+			const auto history = chat(u"chat_id"_q);
+			auto list = QVector<MTPint>();
+			for (const auto &v : input.value(u"message_ids"_q).toArray()) {
+				if (const auto id = v.toVariant().toString().remove('#').toInt()) {
+					list.push_back(MTP_int(id));
+				}
+			}
+			if (!history || list.isEmpty()) {
+				done(u"нет такого чата или номеров сообщений"_q, true);
+				return;
+			}
+			const auto revoke = input.value(u"for_everyone"_q).toBool();
+			confirm(
+				u"Удалить сообщений: "_q + QString::number(list.size()) + u" в «"_q
+					+ history->peer->name() + (revoke ? u"» — у всех?"_q : u"» — только у себя?"_q),
+				[=] {
+					const auto owner = &_session->data();
+					owner->histories().deleteMessages(history, list, revoke);
+					for (const auto &id : list) {
+						if (const auto item = owner->message(history->peer->id, MsgId(id.v))) {
+							item->destroy();
+						}
+					}
+					owner->sendHistoryChangeNotifications();
+					add(u"· удалено в «"_q + history->peer->name() + u"»"_q);
+					done(u"удалено"_q, false);
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"pin_message"_q) {
+			const auto history = chat(u"chat_id"_q);
+			const auto messageId = input.value(u"message_id"_q).toInt();
+			if (!history || !messageId) {
+				done(u"нет такого чата или сообщения"_q, true);
+				return;
+			}
+			const auto unpin = input.value(u"unpin"_q).toBool();
+			const auto silent = input.value(u"silent"_q).toBool();
+			confirm(
+				(unpin ? u"Открепить сообщение #"_q : u"Закрепить сообщение #"_q)
+					+ QString::number(messageId) + u" в «"_q + history->peer->name() + u"»?"_q,
+				[=] {
+					using Flag = MTPmessages_UpdatePinnedMessage::Flag;
+					const auto session = _session;
+					session->api().request(MTPmessages_UpdatePinnedMessage(
+						MTP_flags((unpin ? Flag::f_unpin : Flag(0))
+							| (silent ? Flag::f_silent : Flag(0))),
+						history->peer->input(),
+						MTP_int(messageId)
+					)).done([=](const MTPUpdates &result) {
+						session->api().applyUpdates(result);
+						done(unpin ? u"откреплено"_q : u"закреплено"_q, false);
+					}).fail([=](const MTP::Error &error) {
+						done(u"Telegram отказал: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"react"_q) {
+			const auto history = chat(u"chat_id"_q);
+			const auto messageId = input.value(u"message_id"_q).toInt();
+			const auto emoji = input.value(u"emoji"_q).toString().trimmed();
+			if (!history || !messageId) {
+				done(u"нет такого чата или сообщения"_q, true);
+				return;
+			}
+			using Flag = MTPmessages_SendReaction::Flag;
+			const auto session = _session;
+			session->api().request(MTPmessages_SendReaction(
+				MTP_flags(emoji.isEmpty() ? Flag(0) : Flag::f_reaction),
+				history->peer->input(),
+				MTP_int(messageId),
+				emoji.isEmpty()
+					? MTPVector<MTPReaction>()
+					: MTP_vector<MTPReaction>(1, MTP_reactionEmoji(MTP_string(emoji)))
+			)).done([=](const MTPUpdates &result) {
+				session->api().applyUpdates(result);
+				done(emoji.isEmpty() ? u"реакция убрана"_q : u"реакция поставлена"_q, false);
+			}).fail([=](const MTP::Error &error) {
+				done(u"Telegram отказал: "_q + error.type(), true);
+			}).send();
+		} else if (name == u"clear_history"_q || name == u"delete_chat"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			const auto peer = history->peer;
+			const auto clear = (name == u"clear_history"_q);
+			const auto revoke = input.value(u"for_everyone"_q).toBool();
+			const auto channel = peer->asChannel();
+			const auto what = clear
+				? u"Очистить историю «"_q
+				: channel
+				? u"Выйти из «"_q
+				: u"Удалить чат «"_q;
+			confirm(
+				what + peer->name() + u"»"_q + (revoke ? u" — у всех?"_q : u"?"_q),
+				[=] {
+					if (clear) {
+						_session->api().clearHistory(peer, revoke);
+					} else if (channel) {
+						_session->api().leaveChannel(channel);
+					} else {
+						_session->api().deleteConversation(peer, revoke);
+					}
+					add(u"· готово: «"_q + peer->name() + u"»"_q);
+					done(u"готово"_q, false);
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"join_chat"_q) {
+			const auto link = input.value(u"link"_q).toString().trimmed();
+			static const auto inviteRe = QRegularExpression(
+				u"(?:t|telegram)\\.me/(?:\\+|joinchat/)([A-Za-z0-9_\\-]+)"_q);
+			const auto invite = inviteRe.match(link);
+			const auto session = _session;
+			if (invite.hasMatch()) {
+				const auto hash = invite.captured(1);
+				session->api().request(MTPmessages_ImportChatInvite(
+					MTP_string(hash)
+				)).done([=](const MTPmessages_ChatInviteJoinResult &result) {
+					Api::ProcessChatInviteJoinResult(session, _controller->uiShow(), result, [=](const MTPUpdates &updates) {
+						session->api().applyUpdates(updates);
+					});
+					done(u"вступил по ссылке"_q, false);
+				}).fail([=](const MTP::Error &error) {
+					done(error.type() == u"INVITE_REQUEST_SENT"_q
+						? u"отправлена заявка на вступление — ждём одобрения админа"_q
+						: error.type() == u"USER_ALREADY_PARTICIPANT"_q
+						? u"уже участник"_q
+						: u"не получилось: "_q + error.type(), false);
+				}).send();
+				return;
+			}
+			const auto history = FindChat(_session, link.startsWith('@') || link.contains(u".me/"_q) ? link : u"@"_q + link);
+			if (!history) {
+				done(u"не нашёл такую группу или канал"_q, true);
+				return;
+			}
+			const auto channel = history->peer->asChannel();
+			if (!channel) {
+				done(u"это не группа и не канал; id "_q + ChatId(history), false);
+				return;
+			} else if (channel->amIn()) {
+				done(u"уже участник; id "_q + ChatId(history), false);
+				return;
+			}
+			_session->api().joinChannel(channel);
+			add(u"· вступаю в «"_q + channel->name() + u"»"_q);
+			done(u"вступил в «"_q + channel->name() + u"», id "_q + ChatId(history), false);
+		} else if (name == u"rename_chat"_q || name == u"set_chat_about"_q) {
+			const auto history = chat(u"chat_id"_q);
+			const auto rename = (name == u"rename_chat"_q);
+			const auto text = input.value(rename ? u"title"_q : u"about"_q).toString().trimmed();
+			if (!history || history->peer->isUser() || (rename && text.isEmpty())) {
+				done(u"нет такой группы/канала или пустой текст"_q, true);
+				return;
+			}
+			const auto peer = history->peer;
+			confirm(
+				(rename ? u"Переименовать «"_q + peer->name() + u"» в «"_q + text + u"»?"_q
+					: u"Новое описание «"_q + peer->name() + u"»:\n\n"_q + text),
+				[=] {
+					const auto session = _session;
+					const auto fail = [=](const MTP::Error &error) {
+						done(u"Telegram отказал: "_q + error.type(), true);
+					};
+					if (!rename) {
+						session->api().request(MTPmessages_EditChatAbout(
+							peer->input(),
+							MTP_string(text)
+						)).done([=] {
+							done(u"описание изменено"_q, false);
+						}).fail(fail).send();
+					} else if (const auto channel = peer->asChannel()) {
+						session->api().request(MTPchannels_EditTitle(
+							channel->inputChannel(),
+							MTP_string(text)
+						)).done([=](const MTPUpdates &result) {
+							session->api().applyUpdates(result);
+							done(u"переименовано"_q, false);
+						}).fail(fail).send();
+					} else {
+						session->api().request(MTPmessages_EditChatTitle(
+							MTP_long(peerToChat(peer->id).bare),
+							MTP_string(text)
+						)).done([=](const MTPUpdates &result) {
+							session->api().applyUpdates(result);
+							done(u"переименовано"_q, false);
+						}).fail(fail).send();
+					}
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"remove_member"_q || name == u"set_admin"_q) {
+			const auto history = chat(u"chat_id"_q);
+			const auto userHistory = chat(u"user_id"_q);
+			const auto peer = history ? history->peer.get() : nullptr;
+			const auto user = userHistory ? userHistory->peer->asUser() : nullptr;
+			if (!peer || peer->isUser() || !user) {
+				done(u"нет такой группы или человека"_q, true);
+				return;
+			}
+			if (name == u"remove_member"_q) {
+				confirm(
+					u"Удалить "_q + user->name() + u" из «"_q + peer->name() + u"»?"_q,
+					[=] {
+						if (const auto basic = peer->asChat()) {
+							_session->api().chatParticipants().kick(basic, user);
+						} else if (const auto channel = peer->asChannel()) {
+							_session->api().chatParticipants().kick(channel, user, ChatRestrictionsInfo());
+						}
+						add(u"· удалён "_q + user->name());
+						done(u"удалён"_q, false);
+					},
+					[=] { done(u"пользователь отменил"_q, false); });
+				return;
+			}
+			const auto remove = input.value(u"remove"_q).toBool();
+			const auto rank = input.value(u"rank"_q).toString().trimmed();
+			confirm(
+				(remove ? u"Снять админа "_q : u"Сделать админом "_q) + user->name()
+					+ u" в «"_q + peer->name() + u"»?"_q,
+				[=] {
+					const auto session = _session;
+					const auto fail = [=](const MTP::Error &error) {
+						done(u"Telegram отказал: "_q + error.type(), true);
+					};
+					if (const auto channel = peer->asChannel()) {
+						using Right = MTPDchatAdminRights::Flag;
+						const auto rights = remove
+							? Right(0)
+							: (Right::f_change_info
+								| Right::f_delete_messages
+								| Right::f_ban_users
+								| Right::f_invite_users
+								| Right::f_pin_messages
+								| Right::f_manage_call
+								| (channel->isBroadcast()
+									? (Right::f_post_messages | Right::f_edit_messages)
+									: Right(0)));
+						using Flag = MTPchannels_EditAdmin::Flag;
+						session->api().request(MTPchannels_EditAdmin(
+							MTP_flags(rank.isEmpty() || remove ? Flag(0) : Flag::f_rank),
+							channel->inputChannel(),
+							user->inputUser(),
+							MTP_chatAdminRights(MTP_flags(rights)),
+							MTP_string(remove ? QString() : rank)
+						)).done([=](const MTPUpdates &result) {
+							session->api().applyUpdates(result);
+							done(remove ? u"админ снят"_q : u"назначен админом"_q, false);
+						}).fail(fail).send();
+					} else {
+						session->api().request(MTPmessages_EditChatAdmin(
+							MTP_long(peerToChat(peer->id).bare),
+							user->inputUser(),
+							MTP_bool(!remove)
+						)).done([=] {
+							done(remove ? u"админ снят"_q : u"назначен админом"_q, false);
+						}).fail(fail).send();
+					}
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"invite_link"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history || history->peer->isUser()) {
+				done(u"это не группа и не канал"_q, true);
+				return;
+			}
+			const auto peer = history->peer;
+			if (!peer->username().isEmpty()) {
+				done(u"https://t.me/"_q + peer->username(), false);
+				return;
+			}
+			_session->api().request(MTPmessages_ExportChatInvite(
+				MTP_flags(0),
+				peer->input(),
+				MTP_int(0),
+				MTP_int(0),
+				MTP_string(),
+				MTP_starsSubscriptionPricing(MTP_int(0), MTP_long(0))
+			)).done([=](const MTPExportedChatInvite &result) {
+				auto link = QString();
+				result.match([&](const MTPDchatInviteExported &data) {
+					link = qs(data.vlink());
+				}, [](const auto &) {});
+				done(link.isEmpty() ? u"ссылку не дали"_q : link, link.isEmpty());
+			}).fail([=](const MTP::Error &error) {
+				done(u"нет прав на ссылку: "_q + error.type(), true);
+			}).send();
+		} else if (name == u"create_channel"_q) {
+			const auto title = input.value(u"title"_q).toString().trimmed();
+			const auto about = input.value(u"about"_q).toString().trimmed();
+			const auto group = (input.value(u"type"_q).toString() == u"group"_q);
+			if (title.isEmpty()) {
+				done(u"нужно название"_q, true);
+				return;
+			}
+			confirm(
+				(group ? u"Создать группу «"_q : u"Создать канал «"_q) + title + u"»?"_q,
+				[=] {
+					using Flag = MTPchannels_CreateChannel::Flag;
+					const auto session = _session;
+					session->api().request(MTPchannels_CreateChannel(
+						MTP_flags(group ? Flag::f_megagroup : Flag::f_broadcast),
+						MTP_string(title),
+						MTP_string(about),
+						MTPInputGeoPoint(),
+						MTPstring(),
+						MTP_int(0)
+					)).done([=](const MTPUpdates &result) {
+						session->api().applyUpdates(result);
+						auto id = QString();
+						const auto take = [&](const MTPVector<MTPChat> &chats) {
+							if (!chats.v.isEmpty()) {
+								chats.v.front().match([&](const MTPDchannel &data) {
+									id = QString::number(peerFromChannel(data.vid()).value);
+								}, [](const auto &) {});
+							}
+						};
+						result.match([&](const MTPDupdates &data) {
+							take(data.vchats());
+						}, [&](const MTPDupdatesCombined &data) {
+							take(data.vchats());
+						}, [](const auto &) {});
+						done((group ? u"группа создана"_q : u"канал создан"_q)
+							+ (id.isEmpty() ? QString() : u", id "_q + id), false);
+					}).fail([=](const MTP::Error &error) {
+						done(u"не создано: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"find_user"_q) {
+			const auto query = input.value(u"query"_q).toString().trimmed();
+			if (query.isEmpty()) {
+				done(u"что искать?"_q, true);
+				return;
+			}
+			add(u"· ищу «"_q + query + u"»"_q);
+			findPeers(query, done);
+		} else if (name == u"user_info"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			peerInfo(history->peer, done);
+		} else if (name == u"block_user"_q) {
+			const auto history = chat(u"user_id"_q);
+			const auto user = history ? history->peer->asUser() : nullptr;
+			if (!user || user->isSelf()) {
+				done(u"нет такого человека"_q, true);
+				return;
+			}
+			const auto unblock = input.value(u"unblock"_q).toBool();
+			confirm(
+				(unblock ? u"Разблокировать "_q : u"Заблокировать "_q) + user->name() + u"?"_q,
+				[=] {
+					if (unblock) {
+						_session->api().blockedPeers().unblock(user, [=](bool ok) {
+							done(ok ? u"разблокирован"_q : u"не получилось"_q, !ok);
+						});
+					} else {
+						_session->api().blockedPeers().block(user);
+						done(u"заблокирован"_q, false);
+					}
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"add_contact"_q) {
+			const auto history = chat(u"user_id"_q);
+			const auto user = history ? history->peer->asUser() : nullptr;
+			const auto first = input.value(u"first_name"_q).toString().trimmed();
+			if (!user || user->isSelf() || first.isEmpty()) {
+				done(u"нет такого человека или пустое имя"_q, true);
+				return;
+			}
+			const auto session = _session;
+			session->api().request(MTPcontacts_AddContact(
+				MTP_flags(0),
+				user->inputUser(),
+				MTP_string(first),
+				MTP_string(input.value(u"last_name"_q).toString().trimmed()),
+				MTP_string(),
+				MTPTextWithEntities()
+			)).done([=](const MTPUpdates &result) {
+				session->api().applyUpdates(result);
+				done(u"в контактах: "_q + user->name(), false);
+			}).fail([=](const MTP::Error &error) {
+				done(u"не добавлен: "_q + error.type(), true);
+			}).send();
+		} else if (name == u"delete_contact"_q) {
+			const auto history = chat(u"user_id"_q);
+			const auto user = history ? history->peer->asUser() : nullptr;
+			if (!user || user->isSelf()) {
+				done(u"нет такого человека"_q, true);
+				return;
+			}
+			confirm(
+				u"Удалить из контактов "_q + user->name() + u"?"_q,
+				[=] {
+					const auto session = _session;
+					session->api().request(MTPcontacts_DeleteContacts(
+						MTP_vector<MTPInputUser>(1, user->inputUser())
+					)).done([=](const MTPUpdates &result) {
+						session->api().applyUpdates(result);
+						done(u"удалён из контактов"_q, false);
+					}).fail([=](const MTP::Error &error) {
+						done(u"не удалён: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
+		} else if (name == u"update_profile"_q) {
+			const auto self = _session->user();
+			const auto first = input.contains(u"first_name"_q)
+				? input.value(u"first_name"_q).toString().trimmed()
+				: self->firstName;
+			const auto last = input.contains(u"last_name"_q)
+				? input.value(u"last_name"_q).toString().trimmed()
+				: self->lastName;
+			const auto hasAbout = input.contains(u"about"_q);
+			const auto about = input.value(u"about"_q).toString().trimmed();
+			if (first.isEmpty()) {
+				done(u"имя не может быть пустым"_q, true);
+				return;
+			}
+			confirm(
+				u"Изменить профиль:\n\n"_q + first + u" "_q + last
+					+ (hasAbout ? u"\nО себе: "_q + about : QString()),
+				[=] {
+					using Flag = MTPaccount_UpdateProfile::Flag;
+					const auto session = _session;
+					session->api().request(MTPaccount_UpdateProfile(
+						MTP_flags(Flag::f_first_name
+							| Flag::f_last_name
+							| (hasAbout ? Flag::f_about : Flag(0))),
+						MTP_string(first),
+						MTP_string(last),
+						MTP_string(about)
+					)).done([=](const MTPUser &result) {
+						session->data().processUser(result);
+						if (hasAbout) {
+							session->user()->setAbout(about);
+						}
+						done(u"профиль изменён"_q, false);
+					}).fail([=](const MTP::Error &error) {
+						done(u"не изменён: "_q + error.type(), true);
+					}).send();
+				},
+				[=] { done(u"пользователь отменил"_q, false); });
 		} else if (name == u"mayak_task"_q) {
 			const auto text = input.value(u"text"_q).toString().trimmed();
 			if (text.isEmpty()) {
@@ -1340,6 +2290,114 @@ private:
 		});
 	}
 
+	void findPeers(const QString &query, Fn<void(QString, bool)> done) {
+		const auto session = _session;
+		session->api().request(MTPcontacts_Search(
+			MTP_flags(0),
+			MTP_string(query),
+			MTP_int(20)
+		)).done([=](const MTPcontacts_Found &result) {
+			const auto &data = result.data();
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			auto lines = QStringList();
+			const auto append = [&](const MTPPeer &id, const QString &mark) {
+				if (const auto peer = session->data().peerLoaded(peerFromMTP(id))) {
+					lines.push_back(QString::number(peer->id.value) + u" | "_q + peer->name()
+						+ u" | "_q + PeerType(peer)
+						+ (peer->username().isEmpty() ? QString() : u" | @"_q + peer->username())
+						+ mark);
+				}
+			};
+			for (const auto &id : data.vmy_results().v) {
+				append(id, u" | мой"_q);
+			}
+			for (const auto &id : data.vresults().v) {
+				append(id, QString());
+			}
+			done(lines.isEmpty() ? u"никого не нашлось"_q : lines.join('\n'), false);
+		}).fail([=](const MTP::Error &error) {
+			done(u"поиск не удался: "_q + error.type(), true);
+		}).send();
+	}
+
+	void peerInfo(not_null<PeerData*> peer, Fn<void(QString, bool)> done) {
+		const auto session = _session;
+		auto head = QStringList{
+			peer->name() + u" | "_q + PeerType(peer) + u" | id "_q + QString::number(peer->id.value),
+		};
+		if (!peer->username().isEmpty()) {
+			head.push_back(u"@"_q + peer->username() + u" (https://t.me/"_q + peer->username() + u")"_q);
+		}
+		const auto fail = [=](const MTP::Error &error) {
+			done(head.join('\n') + u"\nподробности не загрузились: "_q + error.type(), false);
+		};
+		if (const auto user = peer->asUser()) {
+			if (!user->phone().isEmpty()) {
+				head.push_back(u"телефон: +"_q + user->phone());
+			}
+			head.push_back(user->isContact() ? u"в контактах"_q : u"не в контактах"_q);
+			session->api().request(MTPusers_GetFullUser(
+				user->inputUser()
+			)).done([=](const MTPusers_UserFull &result) {
+				auto lines = head;
+				result.match([&](const MTPDusers_userFull &data) {
+					session->data().processUsers(data.vusers());
+					session->data().processChats(data.vchats());
+					data.vfull_user().match([&](const MTPDuserFull &full) {
+						const auto about = qs(full.vabout().value_or_empty());
+						if (!about.isEmpty()) {
+							lines.push_back(u"о себе: "_q + about);
+						}
+						lines.push_back(u"общих групп: "_q + QString::number(full.vcommon_chats_count().v));
+						if (full.is_blocked()) {
+							lines.push_back(u"заблокирован"_q);
+						}
+					});
+				});
+				done(lines.join('\n'), false);
+			}).fail(fail).send();
+			return;
+		}
+		const auto got = [=](const MTPmessages_ChatFull &result) {
+			auto lines = head;
+			result.match([&](const MTPDmessages_chatFull &data) {
+				session->data().processUsers(data.vusers());
+				session->data().processChats(data.vchats());
+				data.vfull_chat().match([&](const MTPDchatFull &full) {
+					if (const auto about = qs(full.vabout()); !about.isEmpty()) {
+						lines.push_back(u"описание: "_q + about);
+					}
+				}, [&](const MTPDchannelFull &full) {
+					if (const auto about = qs(full.vabout()); !about.isEmpty()) {
+						lines.push_back(u"описание: "_q + about);
+					}
+					if (const auto count = full.vparticipants_count()) {
+						lines.push_back(u"участников: "_q + QString::number(count->v));
+					}
+				}, [](const MTPDcommunityFull &) {
+				});
+			});
+			done(lines.join('\n'), false);
+		};
+		if (const auto channel = peer->asChannel()) {
+			if (channel->amCreator()) {
+				head.push_back(u"я владелец"_q);
+			} else if (channel->hasAdminRights()) {
+				head.push_back(u"я админ"_q);
+			}
+			session->api().request(MTPchannels_GetFullChannel(
+				channel->inputChannel()
+			)).done(got).fail(fail).send();
+		} else if (const auto basic = peer->asChat()) {
+			session->api().request(MTPmessages_GetFullChat(
+				basic->inputChat()
+			)).done(got).fail(fail).send();
+		} else {
+			done(head.join('\n'), false);
+		}
+	}
+
 	void saveFilter(
 			const Data::ChatFilter &filter,
 			Fn<void(QString, bool)> done,
@@ -1629,6 +2687,7 @@ private:
 
 	const not_null<Window::SessionController*> _controller;
 	const not_null<Main::Session*> _session;
+	base::flat_set<QString> _triedUsernames;
 	QPointer<QWidget> _window;
 	QPointer<QWidget> _input;
 	bool _docked = true; // панель справа в окне Plume, а не отдельное окно
