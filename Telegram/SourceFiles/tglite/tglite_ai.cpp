@@ -1315,7 +1315,7 @@ private:
 			if (history->isPinnedDialog(filterId) == pin) {
 				done(pin ? u"уже закреплён"_q : u"и так не закреплён"_q, false);
 				return;
-			} else if (pin && !owner->pinnedCanPin(filterId, history)) {
+			} else if (pin && !(filterId ? owner->pinnedCanPin(filterId, history) : owner->pinnedCanPin(history))) {
 				done(u"достигнут предел закреплённых чатов — сначала открепите какой-нибудь"_q, true);
 				return;
 			}
