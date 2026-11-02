@@ -74,6 +74,14 @@ void ShowSendToMayak(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
 
+// «Взаимодействие по броням»: в отмеченном личном чате Плюм на сервере сам переписывается о брони залов НКО
+// (yavd.ru) от аккаунта владельца. Список чатов — на сервере (plume.amdiveev.ru/api/bron), пункт меню чата —
+// только в том аккаунте, в который вошёл сервер, и только для людей (не боты, не группы).
+[[nodiscard]] bool BronAvailable(not_null<PeerData*> peer);
+[[nodiscard]] bool IsBron(not_null<PeerData*> peer);
+void SetBron(not_null<Window::SessionController*> controller, not_null<PeerData*> peer, bool on);
+void RefreshBron();
+
 // Раз в 30 с забирает задания других проектов (plume.amdiveev.ru/api/cmd-pending) и выполняет их помощником.
 void StartCommandPolling();
 

@@ -3433,6 +3433,93 @@ void PollCommands() {
 
 } // namespace
 
+namespace {
+
+constexpr auto kBronUrl = "https://plume.amdiveev.ru/api/bron";
+
+base::flat_set<uint64> BronChats;
+uint64 BronMe = 0;
+
+void ApplyBron(const QJsonObject &data) {
+	if (!data.contains(u"chats"_q)) {
+		return;
+	}
+	BronChats.clear();
+	for (const auto &v : data.value(u"chats"_q).toArray()) {
+		BronChats.emplace(uint64(v.toVariant().toLongLong()));
+	}
+	BronMe = uint64(data.value(u"me"_q).toVariant().toLongLong());
+}
+
+} // namespace
+
+void RefreshBron() {
+	const auto key = AiKey();
+	if (key.isEmpty()) {
+		return;
+	}
+	auto request = QNetworkRequest(QUrl(QString::fromLatin1(kBronUrl)));
+	request.setRawHeader("X-Lite-Key", key.toUtf8());
+	request.setTransferTimeout(20000);
+	const auto reply = Net()->get(request);
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		if (reply->error() == QNetworkReply::NoError) {
+			ApplyBron(QJsonDocument::fromJson(reply->readAll()).object());
+		}
+	});
+}
+
+bool BronAvailable(not_null<PeerData*> peer) {
+	const auto user = peer->asUser();
+	return user
+		&& !user->isBot()
+		&& !user->isSelf()
+		&& !user->isServiceUser()
+		&& BronMe
+		&& peer->session().userId().bare == BronMe;
+}
+
+bool IsBron(not_null<PeerData*> peer) {
+	return BronChats.contains(peerToUser(peer->id).bare);
+}
+
+void SetBron(not_null<Window::SessionController*> controller, not_null<PeerData*> peer, bool on) {
+	const auto user = peer->asUser();
+	if (!user) {
+		return;
+	}
+	auto request = QNetworkRequest(QUrl(QString::fromLatin1(kBronUrl)));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+	request.setRawHeader("X-Lite-Key", AiKey().toUtf8());
+	request.setTransferTimeout(130000);
+	const auto reply = Net()->post(request, QJsonDocument(QJsonObject{
+		{ u"id"_q, QString::number(peerToUser(user->id).bare) },
+		{ u"username"_q, user->username() },
+		{ u"on"_q, on },
+	}).toJson(QJsonDocument::Compact));
+	const auto weak = base::make_weak(controller.get());
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		const auto data = QJsonDocument::fromJson(reply->readAll()).object();
+		ApplyBron(data);
+		const auto strong = weak.get();
+		if (!strong) {
+			return;
+		}
+		const auto error = data.value(u"error"_q).toString();
+		if (reply->error() != QNetworkReply::NoError || !error.isEmpty()) {
+			strong->showToast(u"Брони: "_q + (error.isEmpty()
+				? u"сервер Плюма недоступен"_q
+				: error));
+		} else {
+			strong->showToast(on
+				? u"Плюм ведёт брони в этом чате и сам начнёт разговор"_q
+				: u"Брони в этом чате остановлены"_q);
+		}
+	});
+}
+
 void StartCommandPolling() {
 	static auto timer = [] {
 		auto result = new QTimer(QCoreApplication::instance());
@@ -3463,6 +3550,7 @@ void StartCommandPolling() {
 	(void)settings;
 	base::call_delayed(15000, QCoreApplication::instance(), [] {
 		PullSettings();
+		RefreshBron();
 	});
 }
 

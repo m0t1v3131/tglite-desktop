@@ -1938,6 +1938,18 @@ void Filler::fillContextMenuActions() {
 		}, &st::menuIconBot);
 	}
 	addToggleQuiet();
+	// Плюм: «Взаимодействие по броням» — Плюм на сервере сам переписывается с человеком о брони залов
+	if (_peer && TgLite::BronAvailable(_peer)) {
+		const auto peer = _peer;
+		const auto controller = _controller;
+		const auto on = TgLite::IsBron(peer);
+		_addAction(on
+			? u"✓ Остановить брони"_q
+			: u"Взаимодействие по броням"_q, [=] {
+			TgLite::SetBron(controller, peer, !on);
+		}, on ? &st::menuIconRemove : &st::menuIconChatBubble);
+	}
+	TgLite::RefreshBron();
 	addUngroup();
 	addHidePromotion();
 	addToggleArchive();
