@@ -3332,19 +3332,14 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 		[[nodiscard]] rpl::producer<Chosen> singleChosen() const{
 			return _singleChosen.events();
 		}
+		// Плюм: строка «Маяк» — пересылка сразу боту Маяка (он спрятан из списка чатов)
+		[[nodiscard]] rpl::producer<not_null<History*>> mayakChosen() const {
+			return _mayakChosen.events();
+		}
 
 	protected:
 		void prepareViewHook() override final {
 			ChooseRecipientBoxController::prepareViewHook();
-			if (_suggestedChannel) {
-				setupSuggestion();
-			}
-		}
-
-	private:
-		void setupSuggestion() {
-			const auto channel = _suggestedChannel;
-			const auto history = channel->owner().history(channel);
 			auto result = object_ptr<Ui::VerticalLayout>((QWidget*)nullptr);
 			const auto container = result.data();
 			const auto wrap = container->add(
@@ -3352,6 +3347,60 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 					container,
 					object_ptr<Ui::VerticalLayout>(container)));
 			const auto inner = wrap->entity();
+			const auto hasMayak = setupMayak(inner);
+			const auto hasSuggestion = _suggestedChannel
+				&& setupSuggestion(inner);
+			if (!hasMayak && !hasSuggestion) {
+				return;
+			}
+			inner->add(CreatePeerListSectionSubtitle(
+				inner,
+				tr::lng_forward_your_chats()));
+			_suggestionWrap = wrap;
+			delegate()->peerListSetAboveWidget(std::move(result));
+		}
+
+	private:
+		bool setupMayak(not_null<Ui::VerticalLayout*> container) {
+			const auto bot = TgLite::MayakBot(&session());
+			if (!bot) {
+				return false;
+			}
+			const auto history = bot->owner().history(bot);
+			const auto nested = container->lifetime().make_state<
+				PeerListContentDelegateSimple
+			>();
+			const auto controller = container->lifetime().make_state<
+				SuggestionController
+			>(history, SuggestionController::Callbacks{
+				.createRow = [=]() -> std::unique_ptr<PeerListRow> {
+					auto row = ChooseRecipientBoxController::createRow(
+						history);
+					if (row) {
+						row->setCustomStatus(u"в «Инбокс» Маяка"_q);
+					}
+					return row;
+				},
+				.clicked = [=] {
+					_mayakChosen.fire_copy(history);
+				},
+				.contextMenu = [](QWidget*) {
+					return base::unique_qptr<Ui::PopupMenu>();
+				},
+			});
+			controller->setStyleOverrides(listSt());
+			const auto content = container->add(
+				object_ptr<PeerListContent>(container, controller));
+			nested->setContent(content);
+			controller->setDelegate(nested);
+			return nested->peerListFullRowsCount() > 0;
+		}
+
+		bool setupSuggestion(not_null<Ui::VerticalLayout*> container) {
+			const auto channel = _suggestedChannel;
+			const auto history = channel->owner().history(channel);
+			auto section = object_ptr<Ui::VerticalLayout>(container);
+			const auto inner = section.data();
 			inner->add(CreatePeerListSectionSubtitle(
 				inner,
 				tr::lng_forward_your_channel()));
@@ -3378,16 +3427,12 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 			nested->setContent(content);
 			controller->setDelegate(nested);
 			if (!nested->peerListFullRowsCount()) {
-				return;
+				return false;
 			}
-			inner->add(CreatePeerListSectionSubtitle(
-				inner,
-				tr::lng_forward_your_chats()));
-
 			_suggestionDelegate = nested;
 			_suggestionRow = nested->peerListRowAt(0);
-			_suggestionWrap = wrap;
-			delegate()->peerListSetAboveWidget(std::move(result));
+			container->add(std::move(section));
+			return true;
 		}
 
 		void suggestionClicked() {
@@ -3431,6 +3476,7 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 		PeerListRow *_suggestionRow = nullptr;
 
 		rpl::event_stream<Chosen> _singleChosen;
+		rpl::event_stream<not_null<History*>> _mayakChosen;
 		rpl::event_stream<> _selectionChanges;
 
 	};
@@ -3683,6 +3729,22 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 			successCallback();
 		}
 	};
+
+	state->controller->mayakChosen(
+	) | rpl::on_next([=](not_null<History*> mayak) {
+		send(
+			{ not_null<Data::Thread*>(mayak) },
+			[] { return true; },
+			field->getTextWithAppliedMarkdown(),
+			Api::SendOptions(),
+			HistoryView::Controls::NormalizeForwardOptions(
+				session,
+				itemsList,
+				state->box->forwardOptionsData()));
+		if (successCallback) {
+			successCallback();
+		}
+	}, state->box->lifetime());
 
 	const auto sendMenuType = [=] {
 		const auto selected = state->box->collectSelectedRows();

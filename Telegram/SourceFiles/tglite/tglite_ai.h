@@ -9,6 +9,10 @@ namespace Window {
 class SessionController;
 } // namespace Window
 
+namespace Main {
+class Session;
+} // namespace Main
+
 namespace Ui {
 class AbstractButton;
 class InputField;
@@ -18,6 +22,7 @@ class QWidget;
 class History;
 class HistoryItem;
 class PeerData;
+class UserData;
 
 namespace TgLite {
 
@@ -62,6 +67,8 @@ void OpenMayak(not_null<Window::SessionController*> controller);
 void ShowSendToMayak(
 	not_null<Window::SessionController*> controller,
 	not_null<HistoryItem*> item);
+// Бот Маяка, если он уже загружен; иначе nullptr (и подгружает его на следующий раз).
+[[nodiscard]] UserData *MayakBot(not_null<Main::Session*> session);
 // Круглая кнопка-маяк рядом с «Помощником» над чатами.
 [[nodiscard]] Ui::AbstractButton *CreateMayakButton(
 	not_null<QWidget*> parent,

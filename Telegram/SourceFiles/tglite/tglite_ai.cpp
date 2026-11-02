@@ -3896,6 +3896,14 @@ void OpenMayak(not_null<Window::SessionController*> controller) {
 	});
 }
 
+UserData *MayakBot(not_null<Main::Session*> session) {
+	if (const auto bot = session->data().userLoaded(UserId(kMayakBotId))) {
+		return bot;
+	}
+	WithMayakBot(session, [](UserData*) {});
+	return nullptr;
+}
+
 void ShowSendToMayak(
 		not_null<Window::SessionController*> controller,
 		not_null<HistoryItem*> item) {
