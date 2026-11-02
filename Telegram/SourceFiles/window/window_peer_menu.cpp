@@ -314,6 +314,7 @@ private:
 	void addToggleFolder();
 	void addToggleUnreadMark();
 	void addToggleArchive();
+	void addToggleQuiet(); // Плюм
 	void addClearHistory();
 	void addDeleteChat();
 	void addLeaveChat();
@@ -1904,6 +1905,22 @@ void Filler::addVideoChat() {
 	});
 }
 
+// Плюм: «В тихие» / «Вернуть из тихих» — чат пропадает из списка, папок и архива, без уведомлений
+void Filler::addToggleQuiet() {
+	if (!_peer || _peer->isSelf() || _request.key.topic() || _request.key.sublist()) {
+		return;
+	}
+	const auto peer = _peer;
+	const auto controller = _controller;
+	const auto quiet = TgLite::IsQuiet(peer);
+	_addAction(quiet ? u"Вернуть из тихих"_q : u"В тихие"_q, [=] {
+		TgLite::SetQuiet(&peer->session(), peer, !quiet);
+		controller->showToast(quiet
+			? u"Чат вернулся в общий список"_q
+			: u"Чат в тихих: без уведомлений, найти — ☰ → «Тихие»"_q);
+	}, quiet ? &st::menuIconUnmute : &st::menuIconMute);
+}
+
 void Filler::fillContextMenuActions() {
 	const auto history = _request.key.history();
 	const auto channel = history ? history->peer->asChannel() : nullptr;
@@ -1920,6 +1937,7 @@ void Filler::fillContextMenuActions() {
 			TgLite::ShowAssistantForChat(controller, peer, MsgId(), QString());
 		}, &st::menuIconBot);
 	}
+	addToggleQuiet();
 	addUngroup();
 	addHidePromotion();
 	addToggleArchive();
@@ -1945,6 +1963,7 @@ void Filler::fillContextMenuActions() {
 
 void Filler::fillHistoryActions() {
 	addToggleMuteSubmenu(true);
+	addToggleQuiet();
 	addCreateTopic();
 	addInfo();
 	addViewAsTopics();

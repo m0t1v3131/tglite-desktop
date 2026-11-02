@@ -164,6 +164,7 @@ bool IsSyncedKey(const QString &key) {
 		u"hideTaktBot"_q,
 		u"hideMayakBot"_q,
 		u"noisyDigest"_q,
+		u"quietChats"_q,
 	};
 	return keys.contains(key);
 }
@@ -966,6 +967,76 @@ void ApplyFocusPrivacy(not_null<Main::Session*> session, bool enabled) {
 	}
 }
 
+// «Тихие» — как LiteQuiet.java на Android. tglite.json: quietChats — id чатов как на телефоне
+// (личные — id, группы — -id, каналы — -100…id), поэтому список общий через /api/settings.
+constexpr auto kChannelDialogShift = qint64(1000000000000);
+
+QString QuietDialogId(PeerId id) {
+	if (peerIsUser(id)) {
+		return QString::number(peerToUser(id).bare);
+	} else if (peerIsChat(id)) {
+		return QString::number(-qint64(peerToChat(id).bare));
+	}
+	return QString::number(-kChannelDialogShift - qint64(peerToChannel(id).bare));
+}
+
+PeerId QuietPeerId(qint64 dialogId) {
+	if (dialogId > 0) {
+		return peerFromUser(UserId(BareId(dialogId)));
+	} else if (dialogId < -kChannelDialogShift) {
+		return peerFromChannel(ChannelId(BareId(-kChannelDialogShift - dialogId)));
+	}
+	return peerFromChat(ChatId(BareId(-dialogId)));
+}
+
+base::flat_set<uint64> QuietFromJson(const QJsonArray &list) {
+	auto result = base::flat_set<uint64>();
+	for (const auto &id : list) {
+		if (const auto value = id.toString().toLongLong()) {
+			result.emplace(QuietPeerId(value).value);
+		}
+	}
+	return result;
+}
+
+QJsonArray QuietToJson(const base::flat_set<uint64> &chats) {
+	auto result = QJsonArray();
+	for (const auto id : chats) {
+		result.push_back(QuietDialogId(PeerId(id)));
+	}
+	return result;
+}
+
+base::flat_set<uint64> &Quiet() {
+	static auto result = QuietFromJson(ReadState().value(u"quietChats"_q).toArray());
+	return result;
+}
+
+// Чат стал тихим или вернулся: убрать из списка (и счётчиков) или вернуть, снять его уведомления.
+void RefreshQuietChat(not_null<Main::Session*> session, uint64 id) {
+	if (const auto history = session->data().historyLoaded(PeerId(id))) {
+		history->updateChatListExistence();
+		if (Quiet().contains(id)) {
+			Core::App().notifications().clearFromHistory(history);
+		}
+	}
+}
+
+void ReplaceQuiet(not_null<Main::Session*> session, base::flat_set<uint64> chats) {
+	auto &quiet = Quiet();
+	if (ranges::equal(chats, quiet)) {
+		return;
+	}
+	const auto was = std::exchange(quiet, std::move(chats));
+	SetState(u"quietChats"_q, QuietToJson(quiet));
+	for (const auto id : was) {
+		RefreshQuietChat(session, id);
+	}
+	for (const auto id : quiet) {
+		RefreshQuietChat(session, id);
+	}
+}
+
 QString FocusChatName(not_null<Main::Session*> session, uint64 id) {
 	const auto peer = session->data().peerLoaded(PeerId(id));
 	return peer ? peer->name() : (u"Чат "_q + QString::number(id));
@@ -1392,6 +1463,7 @@ QJsonObject SyncedSettings() {
 		{ u"hideTaktBot"_q, HideTaktBotFlag() },
 		{ u"hideMayakBot"_q, HideMayakBotFlag() },
 		{ u"noisyDigest"_q, NoisyDigestFlag() },
+		{ u"quietChats"_q, QuietToJson(Quiet()) },
 	};
 }
 
@@ -1445,6 +1517,9 @@ bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
 	flag(u"muteAll"_q, MuteAll(), [&](bool v) {
 		SetMuteAll(controller, v);
 	});
+	if (settings.contains(u"quietChats"_q)) {
+		ReplaceQuiet(session, QuietFromJson(settings.value(u"quietChats"_q).toArray()));
+	}
 	if (settings.contains(u"focusChats"_q)) {
 		auto chats = base::flat_set<uint64>();
 		for (const auto &id : settings.value(u"focusChats"_q).toArray()) {
@@ -1839,6 +1914,78 @@ void ShowWaitingBox(not_null<Window::SessionController*> controller) {
 				: QString();
 			if (!preview.isEmpty()) {
 				AddHint(box, preview.size() > 140 ? preview.left(139) + u"…"_q : preview);
+			}
+			const auto peer = history->peer;
+			button->setClickedCallback([=] {
+				box->closeBox();
+				controller->showPeerHistory(peer);
+			});
+		}
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+	}));
+}
+
+bool QuietHidden(not_null<const History*> history) {
+	const auto &quiet = Quiet();
+	return !quiet.empty() && quiet.contains(history->peer->id.value);
+}
+
+bool IsQuiet(not_null<PeerData*> peer) {
+	return Quiet().contains(peer->id.value);
+}
+
+void SetQuiet(not_null<Main::Session*> session, not_null<PeerData*> peer, bool quiet) {
+	auto chats = Quiet();
+	if (quiet) {
+		chats.emplace(peer->id.value);
+	} else {
+		chats.remove(peer->id.value);
+	}
+	ReplaceQuiet(session, std::move(chats));
+}
+
+std::vector<not_null<History*>> QuietChats(not_null<Main::Session*> session) {
+	auto result = std::vector<not_null<History*>>();
+	for (const auto id : Quiet()) {
+		if (const auto peer = session->data().peerLoaded(PeerId(id))) {
+			result.push_back(session->data().history(peer));
+		}
+	}
+	ranges::sort(result, ranges::greater(), [](not_null<History*> history) {
+		return history->chatListTimeId();
+	});
+	return result;
+}
+
+void ShowQuietBox(not_null<Window::SessionController*> controller) {
+	const auto list = QuietChats(&controller->session());
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Тихие · "_q + QString::number(list.size())));
+		box->setWidth(st::boxWideWidth);
+		AddHint(box, u"Чаты, убранные в тихие: их нет в списке, папках и архиве, без уведомлений "
+			u"и счётчиков. Убрать сюда или вернуть — правый клик по чату или ⋮ в чате. "
+			u"Помощник: «что нового в тихих»."_q);
+		if (list.empty()) {
+			AddHint(box, u"Пока пусто."_q);
+		}
+		for (const auto &history : list) {
+			const auto last = history->chatListMessage();
+			const auto unread = history->unreadCount();
+			auto text = history->peer->name();
+			if (unread > 0) {
+				text += u" · "_q + QString::number(unread);
+			} else if (history->unreadMark()) {
+				text += u" · •"_q;
+			}
+			if (last) {
+				text += u" · "_q + WaitingWhen(last->date());
+			}
+			const auto button = AddLink(box, text);
+			if (unread > 0 && last) {
+				const auto preview = last->notificationText().text.simplified();
+				if (!preview.isEmpty()) {
+					AddHint(box, preview.size() > 140 ? preview.left(139) + u"…"_q : preview);
+				}
 			}
 			const auto peer = history->peer;
 			button->setClickedCallback([=] {

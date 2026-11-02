@@ -296,6 +296,16 @@ QJsonArray Tools() {
 			  { u"hours"_q, Prop(u"integer"_q, u"на сколько часов; не указано — навсегда"_q) },
 			  { u"unmute"_q, Prop(u"boolean"_q, u"включить звук"_q) } },
 			{ u"chat_id"_q }),
+		Tool(u"quiet_chat"_q,
+			u"Убрать чат в «Тихие» (нет в списке, папках и архиве, без уведомлений и счётчиков; "
+			u"виден только в ☰ → «Тихие») или вернуть (back)."_q,
+			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
+			  { u"back"_q, Prop(u"boolean"_q, u"вернуть из тихих"_q) } },
+			{ u"chat_id"_q }),
+		Tool(u"quiet_news"_q,
+			u"Что нового в «Тихих»: список тихих чатов с id, непрочитанными и последним сообщением. "
+			u"Ответь коротко: где что важное."_q,
+			{}),
 		Tool(u"mark_read"_q,
 			u"Отметить чаты прочитанными (или непрочитанными — unread). all — все чаты с непрочитанными."_q,
 			{ { u"chat_ids"_q, IdsProp(u"id чатов"_q) },
@@ -440,6 +450,7 @@ QString SystemPrompt() {
 		u"Перед отправкой, пересылкой и рассылкой клиент сам спросит подтверждение — не переспрашивай лишний раз. "
 		u"Рассылки только небольшие (до 25 чатов), это личный аккаунт — массовые рассылки могут привести к блокировке. "
 		u"Ты умеешь в Telegram почти всё: закрепить/открепить чат (pin_chat, в т.ч. в папке), архив (archive_chat), звук (mute_chat), "
+		u"«Тихие» — убрать чат с глаз и без уведомлений или вернуть (quiet_chat), что нового в тихих (quiet_news), "
 		u"прочитано/непрочитано (mark_read), открыть чат на экране (open_chat), удалить папку (delete_folder), "
 		u"искать сообщения по всем чатам или в одном (search_messages — так находи старые переписки), "
 		u"изменить/удалить своё сообщение (edit_message, delete_messages), закрепить сообщение (pin_message), реакция (react), "
@@ -1370,6 +1381,29 @@ private:
 				: u"без звука навсегда"_q;
 			add(u"· «"_q + history->peer->name() + u"»: "_q + text);
 			done(text, false);
+		} else if (name == u"quiet_chat"_q) {
+			const auto history = chat(u"chat_id"_q);
+			if (!history) {
+				done(u"нет такого чата"_q, true);
+				return;
+			}
+			const auto back = input.value(u"back"_q).toBool();
+			TgLite::SetQuiet(_session, history->peer, !back);
+			add((back ? u"· из тихих: «"_q : u"· в тихих: «"_q) + history->peer->name() + u"»"_q);
+			done(back ? u"чат вернулся в общий список"_q : u"чат в тихих"_q, false);
+		} else if (name == u"quiet_news"_q) {
+			auto lines = QStringList();
+			for (const auto history : TgLite::QuietChats(_session)) {
+				const auto unread = history->unreadCount();
+				auto line = ChatId(history) + u" | "_q + history->peer->name()
+					+ u" | непрочитано: "_q + QString::number(unread);
+				const auto last = history->chatListMessage();
+				if (unread > 0 && last) {
+					line += u" | последнее: "_q + last->notificationText().text.simplified().left(300);
+				}
+				lines.push_back(line);
+			}
+			done(lines.isEmpty() ? u"в тихих пусто"_q : lines.join('\n'), false);
 		} else if (name == u"mark_read"_q) {
 			const auto unread = input.value(u"unread"_q).toBool();
 			auto list = ids(u"chat_ids"_q);

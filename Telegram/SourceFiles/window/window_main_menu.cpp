@@ -802,6 +802,12 @@ void MainMenu::setupMenu() {
 		TgLite::ShowSummaryBox(controller);
 	});
 	addAction(
+		rpl::single(u"Тихие"_q),
+		{ &st::menuIconMute }
+	)->setClickedCallback([=] {
+		TgLite::ShowQuietBox(controller);
+	});
+	addAction(
 		tr::lng_menu_settings(),
 		{ &st::menuIconSettings }
 	)->setClickedCallback([=] {
