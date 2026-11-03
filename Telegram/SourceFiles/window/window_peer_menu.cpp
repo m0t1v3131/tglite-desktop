@@ -1919,7 +1919,7 @@ void Filler::addToggleQuiet() {
 		controller->showToast(quiet
 			? u"Чат вернулся в общий список"_q
 			: u"Чат в «Своих»: без звука, не в общем списке, найти — ☰ → «Свои»"_q);
-	}, quiet ? &st::menuIconUnmute : &st::menuIconMute);
+	}, &st::menuIconPlumeCircle);
 }
 
 void Filler::fillContextMenuActions() {
