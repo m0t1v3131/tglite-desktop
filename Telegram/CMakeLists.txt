@@ -2364,12 +2364,6 @@ PRIVATE
 )
 
 if (APPLE)
-    # Plume: clang -O2 compiles these two huge wallet files for 3+ hours on the GitHub Mac runner and the build never finishes
-    set_source_files_properties(
-        ${src_loc}/wallet/wallet_content.cpp
-        ${src_loc}/wallet/wallet_session.cpp
-        PROPERTIES COMPILE_OPTIONS -O0
-    )
     nice_target_sources(Telegram ${src_loc}
     PRIVATE
         tray_accounts_menu.cpp
