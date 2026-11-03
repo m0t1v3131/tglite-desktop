@@ -9,6 +9,8 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 Обновления: https://plume.amdiveev.ru/tglite-desktop.json {"win": {"build", "url"}, "mac": {...}, "notes"}.
 */
 #include "tglite/tglite.h"
+
+#include "base/timer_rpl.h"
 #include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
@@ -35,6 +37,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "data/data_changes.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "settings.h"
@@ -967,7 +970,7 @@ void ApplyFocusPrivacy(not_null<Main::Session*> session, bool enabled) {
 	}
 }
 
-// «Тихие» — как LiteQuiet.java на Android. tglite.json: quietChats — id чатов как на телефоне
+// «Свои» (quiet) — как LiteQuiet.java на Android. tglite.json: quietChats — id чатов как на телефоне
 // (личные — id, группы — -id, каналы — -100…id), поэтому список общий через /api/settings.
 constexpr auto kChannelDialogShift = qint64(1000000000000);
 
@@ -1007,6 +1010,11 @@ QJsonArray QuietToJson(const base::flat_set<uint64> &chats) {
 	return result;
 }
 
+rpl::event_stream<> &QuietStream() {
+	static auto result = rpl::event_stream<>();
+	return result;
+}
+
 base::flat_set<uint64> &Quiet() {
 	static auto result = QuietFromJson(ReadState().value(u"quietChats"_q).toArray());
 	return result;
@@ -1035,6 +1043,7 @@ void ReplaceQuiet(not_null<Main::Session*> session, base::flat_set<uint64> chats
 	for (const auto id : quiet) {
 		RefreshQuietChat(session, id);
 	}
+	QuietStream().fire({});
 }
 
 QString FocusChatName(not_null<Main::Session*> session, uint64 id) {
@@ -1957,14 +1966,29 @@ std::vector<not_null<History*>> QuietChats(not_null<Main::Session*> session) {
 	return result;
 }
 
+// Скрытые из списка чаты не шлют UnreadView, поэтому ещё и по новым сообщениям и раз в 15 с.
+rpl::producer<int> QuietUnreadValue(not_null<Main::Session*> session) {
+	return rpl::single(rpl::empty) | rpl::then(rpl::merge(
+		QuietStream().events(),
+		session->data().newItemAdded() | rpl::to_empty,
+		session->changes().historyUpdates(
+			Data::HistoryUpdate::Flag::UnreadView) | rpl::to_empty,
+		base::timer_each(15 * crl::time(1000))
+	)) | rpl::map([=] {
+		return int(ranges::count_if(QuietChats(session), [](not_null<History*> history) {
+			return history->unreadCount() > 0 || history->unreadMark();
+		}));
+	}) | rpl::distinct_until_changed();
+}
+
 void ShowQuietBox(not_null<Window::SessionController*> controller) {
 	const auto list = QuietChats(&controller->session());
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Тихие · "_q + QString::number(list.size())));
+		box->setTitle(rpl::single(u"Свои · "_q + QString::number(list.size())));
 		box->setWidth(st::boxWideWidth);
-		AddHint(box, u"Чаты, убранные в тихие: их нет в списке, папках и архиве, без уведомлений "
-			u"и счётчиков. Убрать сюда или вернуть — правый клик по чату или ⋮ в чате. "
-			u"Помощник: «что нового в тихих»."_q);
+		AddHint(box, u"Свои чаты — читаете, когда захотите: их нет в общем списке и папках, без звука. "
+			u"Новое — точкой на ☰. Убрать сюда или вернуть — правый клик по чату или ⋮ в чате. "
+			u"Помощник: «что нового в своих»."_q);
 		if (list.empty()) {
 			AddHint(box, u"Пока пусто."_q);
 		}

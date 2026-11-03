@@ -1905,7 +1905,7 @@ void Filler::addVideoChat() {
 	});
 }
 
-// Плюм: «В тихие» / «Вернуть из тихих» — чат пропадает из списка, папок и архива, без уведомлений
+// Плюм: «В свои» / «Убрать из своих» — чат пропадает из списка, папок и архива, без уведомлений
 void Filler::addToggleQuiet() {
 	if (!_peer || _peer->isSelf() || _request.key.topic() || _request.key.sublist()) {
 		return;
@@ -1913,11 +1913,11 @@ void Filler::addToggleQuiet() {
 	const auto peer = _peer;
 	const auto controller = _controller;
 	const auto quiet = TgLite::IsQuiet(peer);
-	_addAction(quiet ? u"Вернуть из тихих"_q : u"В тихие"_q, [=] {
+	_addAction(quiet ? u"Убрать из своих"_q : u"В свои"_q, [=] {
 		TgLite::SetQuiet(&peer->session(), peer, !quiet);
 		controller->showToast(quiet
 			? u"Чат вернулся в общий список"_q
-			: u"Чат в тихих: без уведомлений, найти — ☰ → «Тихие»"_q);
+			: u"Чат в «Своих»: без звука, не в общем списке, найти — ☰ → «Свои»"_q);
 	}, quiet ? &st::menuIconUnmute : &st::menuIconMute);
 }
 

@@ -23,7 +23,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26110301;
+inline constexpr auto kBuild = 26110303;
 
 void Start();
 void Stop();
@@ -89,12 +89,13 @@ void ShowFocusBox(not_null<Window::SessionController*> controller);
 [[nodiscard]] rpl::producer<bool> GhostValue();
 void SetGhost(not_null<Window::SessionController*> controller, bool enabled);
 
-// «Тихие»: выбранные чаты не видны в списке, папках и архиве, без уведомлений и счётчиков непрочитанных.
-// Вход — ☰ → «Тихие». tglite.json → quietChats (id чатов строками), общий с телефоном.
+// «Свои» (внутри — quiet): личные чаты не видны в списке, папках и архиве, без уведомлений и счётчиков.
+// Вход — ☰ → «Свои», непрочитанное — точкой на ☰. tglite.json → quietChats (id чатов строками), общий с телефоном.
 [[nodiscard]] bool QuietHidden(not_null<const History*> history);
 [[nodiscard]] bool IsQuiet(not_null<PeerData*> peer);
 void SetQuiet(not_null<Main::Session*> session, not_null<PeerData*> peer, bool quiet);
 [[nodiscard]] std::vector<not_null<History*>> QuietChats(not_null<Main::Session*> session);
+[[nodiscard]] rpl::producer<int> QuietUnreadValue(not_null<Main::Session*> session);
 void ShowQuietBox(not_null<Window::SessionController*> controller);
 
 // Скрытые аккаунты (до 30 аккаунтов в Плюме): не видны в списке аккаунтов, кроме открытого,

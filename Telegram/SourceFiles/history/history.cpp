@@ -3479,7 +3479,7 @@ bool History::shouldBeInChatList() const {
 	} else if (TgLite::ArchiveJunkHidden(this)) {
 		return false; // Плюм: в архиве без чужих каналов и открытых групп
 	} else if (TgLite::QuietHidden(this)) {
-		return false; // Плюм: «Тихие» — только в ☰ → «Тихие»
+		return false; // Плюм: «Свои» — только в ☰ → «Свои»
 	} else if (TgLite::NoisyHidden(this)) {
 		return false; // Плюм: «Сводка» — шумные чаты пересказывает бот Плюм
 	} else if (peer->migrateTo() || !folderKnown()) {

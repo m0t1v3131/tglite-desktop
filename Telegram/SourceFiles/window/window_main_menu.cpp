@@ -802,7 +802,9 @@ void MainMenu::setupMenu() {
 		TgLite::ShowSummaryBox(controller);
 	});
 	addAction(
-		rpl::single(u"Тихие"_q),
+		TgLite::QuietUnreadValue(&controller->session()) | rpl::map([](int unread) {
+			return unread ? (u"Свои  ● "_q + QString::number(unread)) : u"Свои"_q;
+		}),
 		{ &st::menuIconMute }
 	)->setClickedCallback([=] {
 		TgLite::ShowQuietBox(controller);

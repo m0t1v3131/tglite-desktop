@@ -1708,14 +1708,16 @@ void Widget::setupMainMenuToggle() {
 		updateControlsGeometry();
 	}, lifetime());
 
-	Window::OtherAccountsUnreadState(
-		&controller()->session().account()
-	) | rpl::on_next([=](const Window::OthersUnreadState &state) {
-		const auto icon = !state.count
-			? nullptr
-			: !state.allMuted
+	// Плюм: точка на ☰ — и когда новое в «Своих»
+	rpl::combine(
+		Window::OtherAccountsUnreadState(&controller()->session().account()),
+		TgLite::QuietUnreadValue(&controller()->session())
+	) | rpl::on_next([=](const Window::OthersUnreadState &state, int quiet) {
+		const auto icon = (state.count && !state.allMuted) || quiet
 			? &st::dialogsMenuToggleUnread
-			: &st::dialogsMenuToggleUnreadMuted;
+			: state.count
+			? &st::dialogsMenuToggleUnreadMuted
+			: nullptr;
 		_mainMenu.toggle->setIconOverride(icon, icon);
 	}, _mainMenu.toggle->lifetime());
 }
