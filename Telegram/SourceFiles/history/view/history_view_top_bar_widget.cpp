@@ -1953,6 +1953,9 @@ void TopBarWidget::updateOnlineDisplay() {
 		} else {
 			text = Data::OnlineText(user, now);
 			titlePeerTextOnline = Data::OnlineTextActive(user, now);
+			if (TgLite::BronShown(user)) {
+				text += u" \u00B7 "_q + TgLite::BronMark();
+			}
 		}
 	} else if (const auto chat = peer->asChat()) {
 		if (!chat->amIn()) {

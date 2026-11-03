@@ -79,6 +79,9 @@ void ShowSendToMayak(
 // только в том аккаунте, в который вошёл сервер, и только для людей (не боты, не группы).
 [[nodiscard]] bool BronAvailable(not_null<PeerData*> peer);
 [[nodiscard]] bool IsBron(not_null<PeerData*> peer);
+// Подпись «✓ брони» у чата в списке и в шапке — только там, где Плюм ведёт брони от этого аккаунта.
+[[nodiscard]] bool BronShown(not_null<PeerData*> peer);
+[[nodiscard]] QString BronMark();
 void SetBron(not_null<Window::SessionController*> controller, not_null<PeerData*> peer, bool on);
 void RefreshBron();
 

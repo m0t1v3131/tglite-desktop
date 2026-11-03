@@ -39,6 +39,7 @@ Licensed under GNU GPL v. 3.
 #include "data/data_chat.h"
 #include "data/data_chat_filters.h"
 #include "data/data_folder.h"
+#include "data/data_changes.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
@@ -3441,15 +3442,52 @@ constexpr auto kBronUrl = "https://plume.amdiveev.ru/api/bron";
 base::flat_set<uint64> BronChats;
 uint64 BronMe = 0;
 
+// Метка у чата в списке и в шапке появляется и пропадает сразу, без перезапуска
+void RepaintBron(const base::flat_set<uint64> &changed) {
+	for (const auto &account : Core::App().domain().orderedAccounts()) {
+		if (!account->sessionExists()
+			|| account->session().userId().bare != BronMe) {
+			continue;
+		}
+		auto &session = account->session();
+		for (const auto id : changed) {
+			const auto peer = session.data().peerLoaded(
+				peerFromUser(UserId(id)));
+			if (!peer) {
+				continue;
+			}
+			session.changes().peerUpdated(
+				peer,
+				Data::PeerUpdate::Flag::OnlineStatus);
+			if (const auto history = session.data().historyLoaded(peer)) {
+				history->updateChatListEntry();
+			}
+		}
+	}
+}
+
 void ApplyBron(const QJsonObject &data) {
 	if (!data.contains(u"chats"_q)) {
 		return;
 	}
-	BronChats.clear();
+	auto chats = base::flat_set<uint64>();
 	for (const auto &v : data.value(u"chats"_q).toArray()) {
-		BronChats.emplace(uint64(v.toVariant().toLongLong()));
+		chats.emplace(uint64(v.toVariant().toLongLong()));
 	}
+	auto changed = base::flat_set<uint64>();
+	for (const auto id : BronChats) {
+		if (!chats.contains(id)) {
+			changed.emplace(id);
+		}
+	}
+	for (const auto id : chats) {
+		if (!BronChats.contains(id)) {
+			changed.emplace(id);
+		}
+	}
+	BronChats = std::move(chats);
 	BronMe = uint64(data.value(u"me"_q).toVariant().toLongLong());
+	RepaintBron(changed);
 }
 
 } // namespace
@@ -3483,6 +3521,14 @@ bool BronAvailable(not_null<PeerData*> peer) {
 
 bool IsBron(not_null<PeerData*> peer) {
 	return BronChats.contains(peerToUser(peer->id).bare);
+}
+
+bool BronShown(not_null<PeerData*> peer) {
+	return !BronChats.empty() && IsBron(peer) && BronAvailable(peer);
+}
+
+QString BronMark() {
+	return u"\u2713 брони"_q;
 }
 
 void SetBron(not_null<Window::SessionController*> controller, not_null<PeerData*> peer, bool on) {
@@ -3549,6 +3595,13 @@ void StartCommandPolling() {
 		return result;
 	}();
 	(void)settings;
+	static auto bron = [] {
+		auto result = new QTimer(QCoreApplication::instance());
+		QObject::connect(result, &QTimer::timeout, [] { RefreshBron(); });
+		result->start(60 * 1000);
+		return result;
+	}();
+	(void)bron;
 	base::call_delayed(15000, QCoreApplication::instance(), [] {
 		PullSettings();
 		RefreshBron();

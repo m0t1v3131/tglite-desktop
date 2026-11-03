@@ -46,6 +46,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/unread_badge.h"
 #include "ui/unread_badge_paint.h"
 #include "ui/unread_counter_format.h"
+#include "tglite/tglite_ai.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_dialogs_layout.h"
 #include "styles/style_widgets.h"
@@ -946,6 +947,21 @@ void PaintRow(
 					- muteIcon.width()
 					- st::dialogsMuteIconSkip);
 		}
+		// Плюм: подпись «✓ брони» после имени, чтобы было видно, где Плюм ведёт брони
+		const auto bronMark = (history && TgLite::BronShown(from))
+			? TgLite::BronMark()
+			: QString();
+		const auto bronFullWidth = bronMark.isEmpty()
+			? 0
+			: st::dialogsTextFont->width(bronMark);
+		const auto bronWidth = (rectForName.width() > 2 * bronFullWidth)
+			? bronFullWidth
+			: 0;
+		if (bronWidth) {
+			rectForName.setWidth(rectForName.width()
+				- bronWidth
+				- st::dialogsMuteIconSkip);
+		}
 		auto badgeWidth = 0;
 		if ((history || sublist) && !context.search) {
 			const auto widthBefore = rectForName.width();
@@ -977,6 +993,31 @@ void PaintRow(
 			const auto muteTop = rectForName.top()
 				+ (st::semiboldFont->height - muteIcon.height()) / 2;
 			muteIcon.paint(p, muteLeft, muteTop, context.width);
+		}
+		if (bronWidth) {
+			const auto nameW = std::min(
+				rowName.maxWidth(),
+				rectForName.width());
+			const auto muteWidth = drawMuteIcon
+				? (st::dialogsMuteIcon.icon.width() + st::dialogsMuteIconSkip)
+				: 0;
+			p.setFont(st::dialogsTextFont);
+			p.setPen(context.active
+				? st::dialogsTextFgServiceActive
+				: context.selected
+				? st::dialogsTextFgServiceOver
+				: st::dialogsTextFgService);
+			p.drawTextLeft(
+				rectForName.left()
+					+ nameW
+					+ badgeWidth
+					+ muteWidth
+					+ st::dialogsMuteIconSkip,
+				rectForName.top()
+					+ st::semiboldFont->ascent
+					- st::dialogsTextFont->ascent,
+				context.width,
+				bronMark);
 		}
 	} else if (hiddenSenderInfo) {
 		p.setPen(context.active
