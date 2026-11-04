@@ -49,6 +49,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
+#include "ui/widgets/popup_menu.h"
 #include "ui/widgets/buttons.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/painter.h"
@@ -62,6 +63,9 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "styles/style_boxes.h"
 #include "styles/style_settings.h"
 #include "styles/style_basic.h"
+#include "styles/style_dialogs.h"
+#include "styles/style_menu_icons.h"
+#include "styles/style_widgets.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
@@ -1981,44 +1985,170 @@ rpl::producer<int> QuietUnreadValue(not_null<Main::Session*> session) {
 	}) | rpl::distinct_until_changed();
 }
 
-void ShowQuietBox(not_null<Window::SessionController*> controller) {
-	const auto list = QuietChats(&controller->session());
-	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Свои · "_q + QString::number(list.size())));
-		box->setWidth(st::boxWideWidth);
-		AddHint(box, u"Свои чаты — читаете, когда захотите: их нет в общем списке и папках, без звука. "
-			u"Новое — точкой на ☰. Убрать сюда или вернуть — правый клик по чату или ⋮ в чате. "
-			u"Помощник: «что нового в своих»."_q);
-		if (list.empty()) {
-			AddHint(box, u"Пока пусто."_q);
+namespace {
+
+// Строка «Своих» как в списке чатов: последнее сообщение, справа время и счётчик
+class QuietRow final : public PeerListRow {
+public:
+	explicit QuietRow(not_null<History*> history)
+	: PeerListRow(history->peer)
+	, _history(history) {
+		refreshPreview();
+	}
+
+	void refreshPreview() {
+		const auto last = _history->chatListMessage();
+		auto text = last ? last->notificationText().text.simplified() : QString();
+		if (last && !last->isService() && !text.isEmpty()) {
+			if (last->out()) {
+				text = u"Вы: "_q + text;
+			} else if (!_history->peer->isUser() && last->from() != _history->peer) {
+				text = last->from()->shortName() + u": "_q + text;
+			}
+		}
+		setCustomStatus(text.isEmpty() ? u"Нет сообщений"_q : text);
+		_when = last ? WaitingWhen(last->date()) : QString();
+		const auto unread = _history->unreadCount();
+		_unread = (unread > 0)
+			? QString::number(unread)
+			: _history->unreadMark()
+			? u" "_q
+			: QString();
+	}
+
+	[[nodiscard]] not_null<History*> history() const {
+		return _history;
+	}
+
+	QSize rightActionSize() const override {
+		return QSize(st::dialogsUnreadHeight * 3, st::dialogsUnreadHeight * 2);
+	}
+	QMargins rightActionMargins() const override {
+		return QMargins(0, st::peerListBoxItem.namePosition.y(), st::boxRowPadding.right(), 0);
+	}
+	bool rightActionDisabled() const override {
+		return true;
+	}
+	void rightActionPaint(
+			Painter &p,
+			int x,
+			int y,
+			int outerWidth,
+			bool selected,
+			bool actionSelected) override {
+		const auto size = rightActionSize();
+		const auto right = outerWidth - x - size.width();
+		p.setFont(st::dialogsDateFont);
+		p.setPen(st::dialogsDateFg);
+		p.drawTextRight(right, y, outerWidth, _when);
+		if (_unread.isEmpty()) {
+			return;
+		}
+		const auto font = st::dialogsUnreadFont;
+		const auto height = st::dialogsUnreadHeight;
+		const auto width = std::max(height, font->width(_unread) + 2 * st::dialogsUnreadPadding);
+		const auto rect = QRect(x + size.width() - width, y + size.height() - height, width, height);
+		{
+			auto hq = PainterHighQualityEnabler(p);
+			p.setPen(Qt::NoPen);
+			p.setBrush(st::dialogsUnreadBg);
+			p.drawRoundedRect(rect, height / 2., height / 2.);
+		}
+		p.setFont(font);
+		p.setPen(st::dialogsUnreadFg);
+		p.drawText(rect, _unread, style::al_center);
+	}
+
+private:
+	const not_null<History*> _history;
+	QString _when;
+	QString _unread;
+
+};
+
+class QuietListController final : public PeerListController {
+public:
+	explicit QuietListController(not_null<Window::SessionController*> window)
+	: _window(window) {
+	}
+
+	Main::Session &session() const override {
+		return _window->session();
+	}
+
+	void prepare() override {
+		delegate()->peerListSetTitle(rpl::single(u"Свои"_q));
+		setDescriptionText(u"Пока пусто. Добавить — правый клик по чату → «В свои»."_q);
+		const auto session = &_window->session();
+		rpl::single(rpl::empty) | rpl::then(rpl::merge(
+			QuietStream().events(),
+			session->data().newItemAdded() | rpl::to_empty,
+			session->changes().historyUpdates(
+				Data::HistoryUpdate::Flag::UnreadView) | rpl::to_empty
+		)) | rpl::on_next([=] {
+			rebuild();
+		}, lifetime());
+	}
+
+	void rowClicked(not_null<PeerListRow*> row) override {
+		const auto peer = row->peer();
+		_window->hideLayer();
+		_window->showPeerHistory(peer);
+	}
+
+	base::unique_qptr<Ui::PopupMenu> rowContextMenu(
+			QWidget *parent,
+			not_null<PeerListRow*> row) override {
+		const auto peer = row->peer();
+		const auto session = &_window->session();
+		auto result = base::make_unique_q<Ui::PopupMenu>(
+			parent,
+			st::popupMenuWithIcons);
+		result->addAction(u"Убрать из своих"_q, [=] {
+			SetQuiet(session, peer, false);
+		}, &st::menuIconPlumeCircle);
+		return result;
+	}
+
+private:
+	void rebuild() {
+		const auto list = QuietChats(&_window->session());
+		const auto count = delegate()->peerListFullRowsCount();
+		auto same = (count == int(list.size()));
+		for (auto i = 0; same && i != count; ++i) {
+			same = (delegate()->peerListRowAt(i)->peer() == list[i]->peer);
+		}
+		if (same) {
+			for (auto i = 0; i != count; ++i) {
+				const auto row = delegate()->peerListRowAt(i);
+				static_cast<QuietRow*>(row.get())->refreshPreview();
+				delegate()->peerListUpdateRow(row);
+			}
+			return;
+		}
+		while (delegate()->peerListFullRowsCount() > 0) {
+			delegate()->peerListRemoveRow(
+				delegate()->peerListRowAt(
+					delegate()->peerListFullRowsCount() - 1));
 		}
 		for (const auto &history : list) {
-			const auto last = history->chatListMessage();
-			const auto unread = history->unreadCount();
-			auto text = history->peer->name();
-			if (unread > 0) {
-				text += u" · "_q + QString::number(unread);
-			} else if (history->unreadMark()) {
-				text += u" · •"_q;
-			}
-			if (last) {
-				text += u" · "_q + WaitingWhen(last->date());
-			}
-			const auto button = AddLink(box, text);
-			if (unread > 0 && last) {
-				const auto preview = last->notificationText().text.simplified();
-				if (!preview.isEmpty()) {
-					AddHint(box, preview.size() > 140 ? preview.left(139) + u"…"_q : preview);
-				}
-			}
-			const auto peer = history->peer;
-			button->setClickedCallback([=] {
-				box->closeBox();
-				controller->showPeerHistory(peer);
-			});
+			delegate()->peerListAppendRow(std::make_unique<QuietRow>(history));
 		}
-		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
-	}));
+		delegate()->peerListRefreshRows();
+	}
+
+	const not_null<Window::SessionController*> _window;
+
+};
+
+} // namespace
+
+void ShowQuietBox(not_null<Window::SessionController*> controller) {
+	controller->show(Box<PeerListBox>(
+		std::make_unique<QuietListController>(controller),
+		[](not_null<PeerListBox*> box) {
+			box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+		}));
 }
 
 void ShowSummaryBox(not_null<Window::SessionController*> controller) {

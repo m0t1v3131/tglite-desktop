@@ -218,6 +218,7 @@ menuIconPendingRequests: icon {{ "menu/pending_requests-24x24", menuIconColor }}
 menuIconRemovedUsers: icon {{ "menu/removed_users-24x24", menuIconColor }};
 menuIconWelcomeMessage: icon {{ "menu/welcome_message-24x24", menuIconColor }};
 menuIconStar: icon {{ "menu/star", menuIconColor }};
+menuIconPlumeCircle: icon {{ "menu/plume_close_circle-24x24", menuIconColor }};
 
 menuIconTTLAny: icon {{ "menu/auto_delete_plain", menuIconColor }};
 menuIconTTLAnyTextPosition: point(11px, 22px);

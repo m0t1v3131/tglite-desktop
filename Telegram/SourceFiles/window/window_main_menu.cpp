@@ -805,7 +805,7 @@ void MainMenu::setupMenu() {
 		TgLite::QuietUnreadValue(&controller->session()) | rpl::map([](int unread) {
 			return unread ? (u"Свои  ● "_q + QString::number(unread)) : u"Свои"_q;
 		}),
-		{ &st::menuIconMute }
+		{ &st::menuIconPlumeCircle }
 	)->setClickedCallback([=] {
 		TgLite::ShowQuietBox(controller);
 	});
