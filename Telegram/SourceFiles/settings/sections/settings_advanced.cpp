@@ -80,7 +80,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/dictionaries_manager.h"
 #include "chat_helpers/spellchecker_common.h"
 #include "spellcheck/platform/platform_spellcheck.h"
-#include "tglite/tglite.h"
 #endif // !TDESKTOP_DISABLE_SPELLCHECK
 
 #include <ksandbox.h>
@@ -1261,14 +1260,6 @@ void BuildExportSection(SectionBuilder &builder) {
 	builder.addSkip();
 	builder.addDivider();
 	builder.addSkip();
-
-	builder.addButton({
-		.id = u"advanced/tglite"_q,
-		.title = rpl::single(u"Настройки Плюма"_q),
-		.icon = { &st::menuIconExperimental },
-		.onClick = [=] { TgLite::ShowSettingsBox(controller); },
-		.keywords = { u"vpn"_q, u"tglite"_q, u"update"_q, u"proxy"_q },
-	});
 
 	builder.addButton({
 		.id = u"advanced/export"_q,

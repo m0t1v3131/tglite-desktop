@@ -47,6 +47,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/unread_badge_paint.h"
 #include "ui/unread_counter_format.h"
 #include "tglite/tglite_ai.h"
+#include "tglite/tglite.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_dialogs_layout.h"
 #include "styles/style_widgets.h"
@@ -57,6 +58,9 @@ namespace Dialogs::Ui {
 const char kOptionDialogsMuteIcon[] = "dialogs-mute-icon";
 
 namespace {
+
+constexpr auto kQuietTintAlpha = 24;
+constexpr auto kQuietStripeWidth = 3;
 
 base::options::toggle DialogsMuteIcon({
 	.id = kOptionDialogsMuteIcon,
@@ -486,6 +490,18 @@ void PaintRow(
 		p.translate(swipeMirrored ? swipeTranslation : -swipeTranslation, 0);
 	}
 	p.fillRect(geometry, bg);
+	if (history && TgLite::IsQuiet(history->peer)) {
+		// Сохраняем фон выбранного чата, выделение «Своих» остаётся у края
+		if (!context.active && !context.selected) {
+			auto tint = st::activeButtonBg->c;
+			tint.setAlpha(kQuietTintAlpha);
+			p.fillRect(geometry, tint);
+		}
+		const auto stripe = style::ConvertScale(kQuietStripeWidth);
+		p.fillRect(QRect(rtl() ? geometry.right() - stripe + 1 : geometry.x(),
+			geometry.y(), stripe, geometry.height()),
+			context.active ? st::dialogsNameFgActive : st::activeButtonBg);
+	}
 	if (!(flags & Flag::TopicJumpRipple)) {
 		auto ripple = context.active
 			? st::dialogsRippleBgActive

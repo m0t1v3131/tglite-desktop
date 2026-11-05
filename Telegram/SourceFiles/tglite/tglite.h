@@ -73,10 +73,11 @@ void ShowTriageBox(not_null<Window::SessionController*> controller);
 [[nodiscard]] qint64 SettingsUpdated();
 void SetSettingsUpdated(qint64 updated);
 bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated);
+void ShowPlumeBox(not_null<Window::SessionController*> controller);
 void ShowSettingsBox(not_null<Window::SessionController*> controller);
 
 // Фокус-режим: для всех «не в сети», выбранные личные чаты спрятаны из списка и без уведомлений.
-// Все уведомления выключены одним переключателем (☰ и Настройки Плюма).
+// Все уведомления выключены одним переключателем (центр и настройки Плюма).
 [[nodiscard]] bool MuteAll();
 [[nodiscard]] rpl::producer<bool> MuteAllValue();
 void SetMuteAll(not_null<Window::SessionController*> controller, bool enabled);
@@ -89,14 +90,26 @@ void ShowFocusBox(not_null<Window::SessionController*> controller);
 [[nodiscard]] rpl::producer<bool> GhostValue();
 void SetGhost(not_null<Window::SessionController*> controller, bool enabled);
 
-// «Свои» (внутри — quiet): личные чаты не видны в списке, папках и архиве, без уведомлений и счётчиков.
-// Вход — ☰ → «Свои», непрочитанное — точкой на ☰. tglite.json → quietChats (id чатов строками), общий с телефоном.
-[[nodiscard]] bool QuietHidden(not_null<const History*> history);
+// «Свои» (внутри — quiet): чаты выделены в списке и папках, без уведомлений
+// Вход — «Свои» над папками, непрочитанное — точкой на этой кнопке. tglite.json → quietChats (id чатов строками), общий с телефоном.
 [[nodiscard]] bool IsQuiet(not_null<PeerData*> peer);
 void SetQuiet(not_null<Main::Session*> session, not_null<PeerData*> peer, bool quiet);
 [[nodiscard]] std::vector<not_null<History*>> QuietChats(not_null<Main::Session*> session);
 [[nodiscard]] rpl::producer<int> QuietUnreadValue(not_null<Main::Session*> session);
 void ShowQuietBox(not_null<Window::SessionController*> controller);
+
+// «Отложить ответ»: до срока чат не в списке (если не было нового), в срок — первым в «Ждут меня»
+// с пометкой «Пора ответить». tglite.json → snoozedChats, общий с телефоном. Список — «Плюм» → «Отложено».
+[[nodiscard]] bool SnoozeHidden(not_null<const History*> history);
+[[nodiscard]] bool IsSnoozed(not_null<const History*> history);
+[[nodiscard]] bool SnoozeDue(not_null<const History*> history);
+void ShowSnoozeBox(not_null<Window::SessionController*> controller, not_null<History*> history);
+void ShowSnoozedBox(not_null<Window::SessionController*> controller);
+
+// «Прочитать незаметно»: пока открыт так открытый чат, отметка «прочитано» и «прослушано» не уходит.
+[[nodiscard]] bool StealthReading(not_null<const History*> history);
+void OpenStealth(not_null<Window::SessionController*> controller, not_null<PeerData*> peer);
+void MarkStealthRead(not_null<History*> history);
 
 // Скрытые аккаунты (до 30 аккаунтов в Плюме): не видны в списке аккаунтов, кроме открытого,
 // без уведомлений и счётчика непрочитанных. tglite.json → hiddenAccounts (id пользователей).

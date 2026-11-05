@@ -346,7 +346,7 @@ private:
 	object_ptr<Ui::FadeWrapScaled<Ui::IconButton>> _lockUnlock;
 	object_ptr<Ui::AbstractButton> _plume = { nullptr }; // Plume: кнопка «Takt»
 	object_ptr<Ui::AbstractButton> _plumeRefresh = { nullptr }; // Plume: ↻ «Обновить»
-	object_ptr<Ui::AbstractButton> _plumeSettings = { nullptr }; // Plume: шестерёнка «Настройки Плюма»
+	object_ptr<Ui::RpWidget> _plumeNavigation = { nullptr }; // Плюм: быстрые разделы над папками
 	object_ptr<Ui::AbstractButton> _mayak = { nullptr }; // Plume: кнопка «Маяк»
 
 	std::unique_ptr<Ui::MoreChatsBar> _moreChatsBar;

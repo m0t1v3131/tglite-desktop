@@ -688,9 +688,9 @@ Widget::Widget(
 		_plumeRefresh = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreateRefreshButton(_searchControls, controller));
 		_plumeRefresh->show();
-		_plumeSettings = object_ptr<Ui::AbstractButton>::fromRaw(
-			TgLite::CreatePlumeSettingsButton(_searchControls, controller));
-		_plumeSettings->show();
+		_plumeNavigation = object_ptr<Ui::RpWidget>::fromRaw(
+			TgLite::CreatePlumeNavigation(_searchControls, controller));
+		_plumeNavigation->show();
 		_mayak = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreateMayakButton(_searchControls, controller));
 		_mayak->show();
@@ -1708,12 +1708,9 @@ void Widget::setupMainMenuToggle() {
 		updateControlsGeometry();
 	}, lifetime());
 
-	// Плюм: точка на ☰ — и когда новое в «Своих»
-	rpl::combine(
-		Window::OtherAccountsUnreadState(&controller()->session().account()),
-		TgLite::QuietUnreadValue(&controller()->session())
-	) | rpl::on_next([=](const Window::OthersUnreadState &state, int quiet) {
-		const auto icon = (state.count && !state.allMuted) || quiet
+	Window::OtherAccountsUnreadState(&controller()->session().account()
+	) | rpl::on_next([=](const Window::OthersUnreadState &state) {
+		const auto icon = (state.count && !state.allMuted)
 			? &st::dialogsMenuToggleUnread
 			: state.count
 			? &st::dialogsMenuToggleUnreadMuted
@@ -4576,14 +4573,25 @@ void Widget::updateControlsGeometry() {
 		+ st::dialogsFilterPadding.x();
 	const auto plumeWidth = (_plume ? _plume->width() : 0)
 		+ (_plumeRefresh ? _plumeRefresh->width() : 0)
-		+ (_plumeSettings ? _plumeSettings->width() : 0)
 		+ (_mayak ? _mayak->width() : 0);
 	const auto filterWidth = std::max(ratiow, smallw)
 		- filterLeft
 		- filterRight
 		- plumeWidth;
-	const auto filterAreaHeight = st::topBarHeight;
+	const auto hasPlumeNavigation = _plumeNavigation
+		&& narrowRatio == 0.
+		&& !_openedFolder
+		&& !_openedForum
+		&& _searchState.query.isEmpty()
+		&& !_searchState.community
+		&& !searchInPeer();
+	const auto navigationHeight = hasPlumeNavigation ? _plumeNavigation->height() : 0;
+	const auto filterAreaHeight = st::topBarHeight + navigationHeight;
 	_searchControls->setGeometry(0, filterAreaTop, ratiow, filterAreaHeight);
+	if (_plumeNavigation) {
+		_plumeNavigation->setGeometry(0, st::topBarHeight, ratiow, _plumeNavigation->height());
+		_plumeNavigation->setVisible(hasPlumeNavigation);
+	}
 	if (_subsectionTopBar) {
 		_subsectionTopBar->setGeometryWithNarrowRatio(
 			_searchControls->geometry(),
@@ -4591,7 +4599,7 @@ void Widget::updateControlsGeometry() {
 			narrowRatio);
 	}
 
-	auto filterTop = (filterAreaHeight - _search->height()) / 2;
+	auto filterTop = (st::topBarHeight - _search->height()) / 2;
 	filterLeft = anim::interpolate(filterLeft, _narrowWidth, narrowRatio);
 	_search->setGeometryToLeft(
 		filterLeft,
@@ -4626,20 +4634,12 @@ void Widget::updateControlsGeometry() {
 			st::dialogsFilterPadding.y());
 		_plumeRefresh->setVisible(narrowRatio == 0.);
 	}
-	if (_plumeSettings) {
-		_plumeSettings->moveToLeft(
-			filterLeft + filterWidth + st::dialogsFilterPadding.x() / 2
-				+ refreshWidth,
-			st::dialogsFilterPadding.y());
-		_plumeSettings->setVisible(narrowRatio == 0.);
-	}
 	if (_mayak) {
 		_mayak->moveToLeft(
 			filterLeft
 				+ filterWidth
 				+ st::dialogsFilterPadding.x() / 2
-				+ refreshWidth
-				+ (_plumeSettings ? _plumeSettings->width() : 0),
+				+ refreshWidth,
 			st::dialogsFilterPadding.y());
 		_mayak->setVisible(narrowRatio == 0.);
 	}
@@ -4649,7 +4649,6 @@ void Widget::updateControlsGeometry() {
 				+ filterWidth
 				+ st::dialogsFilterPadding.x() / 2
 				+ refreshWidth
-				+ (_plumeSettings ? _plumeSettings->width() : 0)
 				+ (_mayak ? _mayak->width() : 0),
 			st::dialogsFilterPadding.y());
 		_plume->setVisible(narrowRatio == 0.);

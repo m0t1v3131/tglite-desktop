@@ -23,6 +23,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_folder.h"
+#include "data/data_histories.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
 #include "data/data_thread.h"
@@ -43,6 +44,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "settings.h"
 #include "mtproto/mtproto_proxy_data.h"
 #include "storage/localstorage.h"
+#include "ui/boxes/choose_date_time.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/single_choice_box.h"
 #include "ui/layers/generic_box.h"
@@ -79,6 +81,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include <QtCore/QProcess>
 #include <QtCore/QUrlQuery>
 #include <QtCore/QTimer>
+#include <QtCore/QTimeZone>
 #include <QtCore/QPointer>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
@@ -172,6 +175,7 @@ bool IsSyncedKey(const QString &key) {
 		u"hideMayakBot"_q,
 		u"noisyDigest"_q,
 		u"quietChats"_q,
+		u"snoozedChats"_q,
 	};
 	return keys.contains(key);
 }
@@ -1024,10 +1028,11 @@ base::flat_set<uint64> &Quiet() {
 	return result;
 }
 
-// Чат стал тихим или вернулся: убрать из списка (и счётчиков) или вернуть, снять его уведомления.
+// При изменении «Своих» обновляем выделение и снимаем тихие уведомления
 void RefreshQuietChat(not_null<Main::Session*> session, uint64 id) {
 	if (const auto history = session->data().historyLoaded(PeerId(id))) {
 		history->updateChatListExistence();
+		history->updateChatListEntry();
 		if (Quiet().contains(id)) {
 			Core::App().notifications().clearFromHistory(history);
 		}
@@ -1053,6 +1058,205 @@ void ReplaceQuiet(not_null<Main::Session*> session, base::flat_set<uint64> chats
 QString FocusChatName(not_null<Main::Session*> session, uint64 id) {
 	const auto peer = session->data().peerLoaded(PeerId(id));
 	return peer ? peer->name() : (u"Чат "_q + QString::number(id));
+}
+
+// «Отложить ответ» — как LiteSnooze.java на Android. tglite.json → snoozedChats: [{id, until (мс), mid}],
+// id чатов как на телефоне, поэтому список общий через /api/settings. До срока чат не в списке,
+// если с откладывания не было нового; в срок — в «Ждут меня» первым с пометкой «Пора ответить».
+constexpr auto kSnoozeHour = 10; // «Завтра» — в 10:00 по Москве
+constexpr auto kSnoozeLimit = size_t(200);
+constexpr auto kSnoozeRecheck = crl::time(6 * 3600 * 1000); // таймер дольше не ставим — перепроверим
+
+struct SnoozeItem {
+	qint64 until = 0; // мс
+	qint64 mid = 0; // последнее сообщение чата при откладывании
+};
+
+base::flat_map<uint64, SnoozeItem> SnoozeFromJson(const QJsonArray &list) {
+	auto result = base::flat_map<uint64, SnoozeItem>();
+	for (const auto &value : list) {
+		const auto item = value.toObject();
+		if (const auto id = item.value(u"id"_q).toString().toLongLong()) {
+			result.emplace(QuietPeerId(id).value, SnoozeItem{
+				qint64(item.value(u"until"_q).toDouble()),
+				qint64(item.value(u"mid"_q).toDouble()),
+			});
+		}
+	}
+	return result;
+}
+
+QJsonArray SnoozeToJson(const base::flat_map<uint64, SnoozeItem> &chats) {
+	auto result = QJsonArray();
+	for (const auto &[id, item] : chats) {
+		result.push_back(QJsonObject{
+			{ u"id"_q, QuietDialogId(PeerId(id)) },
+			{ u"until"_q, double(item.until) },
+			{ u"mid"_q, double(item.mid) },
+		});
+	}
+	return result;
+}
+
+base::flat_map<uint64, SnoozeItem> &Snoozed() {
+	static auto result = SnoozeFromJson(ReadState().value(u"snoozedChats"_q).toArray());
+	return result;
+}
+
+rpl::event_stream<> &SnoozeStream() {
+	static auto result = rpl::event_stream<>();
+	return result;
+}
+
+qint64 NowMs() {
+	return QDateTime::currentMSecsSinceEpoch();
+}
+
+const SnoozeItem *FindSnooze(not_null<const History*> history) {
+	const auto &snoozed = Snoozed();
+	const auto i = snoozed.find(history->peer->id.value);
+	return (i != snoozed.end()) ? &i->second : nullptr;
+}
+
+qint64 LastServerId(not_null<const History*> history) {
+	const auto last = history->lastServerMessage();
+	return last ? qint64(last->id.bare) : 0;
+}
+
+// После срока человек ответил — отсрочка больше не нужна
+bool SnoozeAnswered(not_null<const History*> history, const SnoozeItem &item) {
+	const auto last = history->lastServerMessage();
+	return last
+		&& last->out()
+		&& qint64(last->id.bare) > item.mid
+		&& qint64(last->date()) * 1000 >= item.until;
+}
+
+void RefreshSnoozedChats(not_null<Main::Session*> session) {
+	for (const auto &[id, item] : Snoozed()) {
+		if (const auto history = session->data().historyLoaded(PeerId(id))) {
+			history->updateChatListExistence();
+		}
+	}
+	SnoozeStream().fire({});
+}
+
+// Ближайший срок — вернуть чат в список, когда приложение открыто
+void ArmSnoozeTimer(not_null<Main::Session*> session, qint64 until) {
+	static auto armed = qint64(0);
+	const auto now = NowMs();
+	if (armed > now && armed <= until) {
+		return;
+	}
+	armed = until;
+	const auto delay = std::clamp(until - now + 1000, crl::time(1000), kSnoozeRecheck);
+	base::call_delayed(delay, session.get(), [=] {
+		armed = 0;
+		RefreshSnoozedChats(session);
+	});
+}
+
+void ReplaceSnoozed(
+		not_null<Main::Session*> session,
+		base::flat_map<uint64, SnoozeItem> chats) {
+	auto &snoozed = Snoozed();
+	const auto same = (chats.size() == snoozed.size()) && ranges::all_of(chats, [&](const auto &pair) {
+		const auto i = snoozed.find(pair.first);
+		return (i != snoozed.end())
+			&& (i->second.until == pair.second.until)
+			&& (i->second.mid == pair.second.mid);
+	});
+	if (same) {
+		return;
+	}
+	const auto was = std::exchange(snoozed, std::move(chats));
+	while (snoozed.size() > kSnoozeLimit) {
+		snoozed.erase(snoozed.begin());
+	}
+	SetState(u"snoozedChats"_q, SnoozeToJson(snoozed));
+	for (const auto &[id, item] : was) {
+		if (const auto history = session->data().historyLoaded(PeerId(id))) {
+			history->updateChatListExistence();
+		}
+	}
+	RefreshSnoozedChats(session);
+}
+
+void SetSnooze(not_null<History*> history, qint64 until) {
+	auto chats = Snoozed();
+	const auto id = history->peer->id.value;
+	chats.remove(id);
+	if (until > 0) {
+		chats.emplace(id, SnoozeItem{ until, LastServerId(history) });
+	}
+	ReplaceSnoozed(&history->session(), std::move(chats));
+}
+
+// Ответили после срока — убрать напоминание
+void ClearAnsweredSnoozed(not_null<Main::Session*> session) {
+	auto chats = Snoozed();
+	const auto now = NowMs();
+	for (auto i = chats.begin(); i != chats.end();) {
+		const auto history = session->data().historyLoaded(PeerId(i->first));
+		if (history && i->second.until <= now && SnoozeAnswered(history, i->second)) {
+			i = chats.erase(i);
+		} else {
+			++i;
+		}
+	}
+	ReplaceSnoozed(session, std::move(chats));
+}
+
+qint64 TomorrowMorning() {
+	const auto moscow = QTimeZone(QByteArrayLiteral("Europe/Moscow"));
+	const auto now = QDateTime::currentDateTime().toTimeZone(moscow);
+	return QDateTime(now.date().addDays(1), QTime(kSnoozeHour, 0), moscow).toMSecsSinceEpoch();
+}
+
+QString SnoozeWhen(qint64 until) {
+	const auto when = QDateTime::fromMSecsSinceEpoch(until);
+	const auto days = QDate::currentDate().daysTo(when.date());
+	const auto time = when.toString(u"HH:mm"_q);
+	return (days == 0)
+		? (u"сегодня "_q + time)
+		: (days == 1)
+		? (u"завтра "_q + time)
+		: when.toString(u"dd.MM HH:mm"_q);
+}
+
+QString SnoozeLabel(not_null<const History*> history) {
+	const auto item = FindSnooze(history);
+	return !item
+		? QString()
+		: (item->until <= NowMs())
+		? u"Пора ответить"_q
+		: (u"до "_q + SnoozeWhen(item->until));
+}
+
+base::flat_set<uint64> &Stealth() {
+	static auto result = base::flat_set<uint64>();
+	return result;
+}
+
+void ShowSnoozeTimeBox(
+		not_null<Window::SessionController*> controller,
+		not_null<History*> history) {
+	const auto item = FindSnooze(history);
+	const auto time = item ? TimeId(item->until / 1000) : TimeId(TomorrowMorning() / 1000);
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		Ui::ChooseDateTimeBox(box, {
+			.title = rpl::single(u"Отложить до"_q),
+			.submit = rpl::single(u"Отложить"_q),
+			.done = [=](TimeId result) {
+				box->closeBox();
+				SetSnooze(history, qint64(result) * 1000);
+				controller->showToast(u"Отложено до "_q + SnoozeWhen(qint64(result) * 1000)
+					+ u". Можно читать — в срок чат будет в «Ждут меня» с пометкой «Пора ответить»"_q);
+			},
+			.min = [] { return base::unixtime::now() + 60; },
+			.time = time,
+		});
+	}));
 }
 
 } // namespace
@@ -1099,7 +1303,7 @@ bool HideArchiveBots() {
 // Канал или открытая группа в архиве, где вы не создатель и не админ, или чужой бот.
 // Закреплённое в архиве не прячем.
 bool ArchiveJunkHidden(not_null<const History*> history) {
-	if (!history->folder() || history->isPinnedDialog(FilterId())) {
+	if (IsQuiet(history->peer) || !history->folder() || history->isPinnedDialog(FilterId())) {
 		return false;
 	}
 	if (const auto user = history->peer->asUser()) {
@@ -1171,7 +1375,7 @@ bool NoisyDigest() {
 
 // Шумный чат: чужой канал или группа без звука, где вы не создатель и не админ. Закреплённые — не шумные.
 bool NoisyHidden(not_null<const History*> history) {
-	if (!NoisyDigestFlag() || history->isPinnedDialog(FilterId())) {
+	if (IsQuiet(history->peer) || !NoisyDigestFlag() || history->isPinnedDialog(FilterId())) {
 		return false;
 	} else if (const auto channel = history->peer->asChannel()) {
 		return !channel->isCommunity()
@@ -1374,7 +1578,7 @@ void ShowFocusBox(not_null<Window::SessionController*> controller) {
 			box,
 			u"Для всех вы «не в сети» («Время захода» — «Никто», при выключении вернётся как было). "
 			u"Выбранные личные чаты пропадают из списка и не присылают уведомлений, "
-			u"найти их можно поиском. Включать быстро — в меню ☰ → «Фокус-режим»."_q,
+			u"найти их можно поиском. Включать быстро — в разделе «Плюм» над папками."_q,
 			st::boxLabel));
 		const auto toggle = box->addRow(object_ptr<Ui::Checkbox>(
 			box,
@@ -1477,6 +1681,7 @@ QJsonObject SyncedSettings() {
 		{ u"hideMayakBot"_q, HideMayakBotFlag() },
 		{ u"noisyDigest"_q, NoisyDigestFlag() },
 		{ u"quietChats"_q, QuietToJson(Quiet()) },
+		{ u"snoozedChats"_q, SnoozeToJson(Snoozed()) },
 	};
 }
 
@@ -1532,6 +1737,9 @@ bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
 	});
 	if (settings.contains(u"quietChats"_q)) {
 		ReplaceQuiet(session, QuietFromJson(settings.value(u"quietChats"_q).toArray()));
+	}
+	if (settings.contains(u"snoozedChats"_q)) {
+		ReplaceSnoozed(session, SnoozeFromJson(settings.value(u"snoozedChats"_q).toArray()));
 	}
 	if (settings.contains(u"focusChats"_q)) {
 		auto chats = base::flat_set<uint64>();
@@ -1837,8 +2045,10 @@ QFont StatFont(int size) {
 // Ждёт вас: личный чат с непрочитанным или где последнее слово за собеседником (до 2 дней),
 // в группе или канале — упоминание вам; плюс отмеченные «непрочитанными» и сводки бота Плюм.
 bool Waiting(not_null<History*> history, TimeId now) {
-	if (FocusHidden(history) || TaktBotHidden(history)) {
+	if (FocusHidden(history) || TaktBotHidden(history) || SnoozeHidden(history)) {
 		return false;
+	} else if (SnoozeDue(history)) {
+		return true; // Плюм: срок отсрочки — «Пора ответить», даже если прочитано
 	} else if (history->unreadMark() || history->unreadMentions().has()) {
 		return true;
 	}
@@ -1896,7 +2106,7 @@ void ShowWaitingBox(not_null<Window::SessionController*> controller) {
 		visit(channel);
 	});
 	ranges::sort(list, ranges::greater(), [](not_null<History*> history) {
-		return history->chatListTimeId();
+		return std::make_pair(SnoozeDue(history), history->chatListTimeId());
 	});
 
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
@@ -1913,6 +2123,9 @@ void ShowWaitingBox(not_null<Window::SessionController*> controller) {
 			const auto unread = history->unreadCount();
 			const auto mention = history->unreadMentions().has();
 			auto text = history->peer->name();
+			if (SnoozeDue(history)) {
+				text = u"⏰ "_q + text + u" · пора ответить"_q;
+			}
 			if (mention) {
 				text += u" · @ упоминание"_q;
 			} else if (unread > 0) {
@@ -1936,11 +2149,6 @@ void ShowWaitingBox(not_null<Window::SessionController*> controller) {
 		}
 		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
 	}));
-}
-
-bool QuietHidden(not_null<const History*> history) {
-	const auto &quiet = Quiet();
-	return !quiet.empty() && quiet.contains(history->peer->id.value);
 }
 
 bool IsQuiet(not_null<PeerData*> peer) {
@@ -2149,6 +2357,109 @@ void ShowQuietBox(not_null<Window::SessionController*> controller) {
 		[](not_null<PeerListBox*> box) {
 			box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
 		}));
+}
+
+bool SnoozeHidden(not_null<const History*> history) {
+	const auto item = FindSnooze(history);
+	if (!item || item->until <= NowMs() || LastServerId(history) > item->mid) {
+		return false;
+	}
+	ArmSnoozeTimer(&history->session(), item->until);
+	return true;
+}
+
+bool IsSnoozed(not_null<const History*> history) {
+	return FindSnooze(history) != nullptr;
+}
+
+bool SnoozeDue(not_null<const History*> history) {
+	const auto item = FindSnooze(history);
+	return item && item->until <= NowMs() && !SnoozeAnswered(history, *item);
+}
+
+bool StealthReading(not_null<const History*> history) {
+	const auto &stealth = Stealth();
+	return !stealth.empty() && stealth.contains(history->peer->id.value);
+}
+
+void OpenStealth(not_null<Window::SessionController*> controller, not_null<PeerData*> peer) {
+	const auto id = peer->id.value;
+	Stealth().emplace(id);
+	controller->showPeerHistory(peer);
+	controller->showToast(u"Читаете незаметно — отметки «прочитано» нет. "
+		u"Ответ или реакция её поставят. Отметить сразу — ⋮ → «Отметить прочитанным»"_q);
+	// Ушли из чата — режим заканчивается, чат остаётся непрочитанным
+	controller->activeChatChanges() | rpl::filter([=](const Dialogs::Key &key) {
+		return !key.peer() || key.peer()->id.value != id;
+	}) | rpl::take(1) | rpl::to_empty | rpl::on_next([=] {
+		Stealth().remove(id);
+	}, controller->lifetime());
+}
+
+void MarkStealthRead(not_null<History*> history) {
+	Stealth().remove(history->peer->id.value);
+	history->session().data().histories().readInbox(history);
+}
+
+void ShowSnoozeBox(not_null<Window::SessionController*> controller, not_null<History*> history) {
+	const auto peer = history->peer;
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(peer->name()));
+		const auto label = SnoozeLabel(history);
+		AddHint(box, label.isEmpty()
+			? u"Чат уйдёт из списка до срока и вернётся с пометкой «Пора ответить». Читать можно и сейчас."_q
+			: (u"Отложено: "_q + label));
+		const auto add = [&](const QString &text, Fn<void()> click) {
+			AddLink(box, text)->setClickedCallback([=] {
+				box->closeBox();
+				click();
+			});
+		};
+		add(u"Открыть"_q, [=] { controller->showPeerHistory(peer); });
+		add(u"Прочитать незаметно"_q, [=] { OpenStealth(controller, peer); });
+		add(u"Завтра в 10:00"_q, [=] {
+			SetSnooze(history, TomorrowMorning());
+			controller->showToast(u"Отложено до "_q + SnoozeWhen(TomorrowMorning())
+				+ u". Список — «Плюм» → «Отложено»"_q);
+		});
+		add(label.isEmpty() ? u"Выбрать день и время…"_q : u"Перенести на другое время…"_q, [=] {
+			ShowSnoozeTimeBox(controller, history);
+		});
+		if (!label.isEmpty()) {
+			add(u"Готово, убрать напоминание"_q, [=] {
+				SetSnooze(history, 0);
+				controller->showToast(u"Напоминание снято"_q);
+			});
+		}
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+	}));
+}
+
+void ShowSnoozedBox(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	ClearAnsweredSnoozed(session);
+	auto list = std::vector<std::pair<not_null<History*>, qint64>>();
+	for (const auto &[id, item] : Snoozed()) {
+		if (const auto peer = session->data().peerLoaded(PeerId(id))) {
+			list.emplace_back(session->data().history(peer), item.until);
+		}
+	}
+	ranges::sort(list, ranges::less(), [](const auto &pair) { return pair.second; });
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Отложено · "_q + QString::number(list.size())));
+		box->setWidth(st::boxWideWidth);
+		AddHint(box, list.empty()
+			? u"Пока пусто. Отложить — правый клик по чату → «Отложить ответ»."_q
+			: u"Нажмите на чат: открыть, прочитать незаметно, перенести или убрать напоминание."_q);
+		for (const auto &pair : list) {
+			const auto history = pair.first;
+			AddLink(box, history->peer->name() + u" · "_q + SnoozeLabel(history))->setClickedCallback([=] {
+				box->closeBox();
+				ShowSnoozeBox(controller, history);
+			});
+		}
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+	}));
 }
 
 void ShowSummaryBox(not_null<Window::SessionController*> controller) {
@@ -2898,6 +3209,64 @@ void ShowTriageBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
+void ShowPlumeBox(not_null<Window::SessionController*> controller) {
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Плюм"_q));
+		AddHint(box, u"Ваше пространство для спокойного общения."_q);
+		const auto section = [=](const QString &title) {
+			box->addRow(object_ptr<Ui::FlatLabel>(
+				box, title, st::defaultSubsectionTitle),
+				st::defaultSubsectionTitlePadding);
+		};
+		const auto add = [&](const QString &text, Fn<void()> click) {
+			AddLink(box, text)->setClickedCallback([=] {
+				box->closeBox();
+				click();
+			});
+		};
+		section(u"Под рукой"_q);
+		add(u"Свои"_q, [=] { ShowQuietBox(controller); });
+		add(u"Ждут меня"_q, [=] { ShowWaitingBox(controller); });
+		add(u"Отложено"_q, [=] { ShowSnoozedBox(controller); });
+		add(u"Сводка сейчас"_q, [=] { RequestDigest(controller); });
+		section(u"Помощь и порядок"_q);
+		add(u"Помощник"_q, [=] { ShowAssistant(controller); });
+		add(u"Разбор чатов"_q, [=] { ShowTriageBox(controller); });
+		add(u"Сводка и чистка"_q, [=] { ShowSummaryBox(controller); });
+		section(u"Спокойный режим"_q);
+		const auto focus = AddToggle(box, u"Фокус"_q, FocusValue());
+		focus->toggledChanges() | rpl::filter([](bool on) {
+			return on != FocusActive();
+		}) | rpl::on_next([=](bool on) {
+			SetFocus(controller, on);
+		}, focus->lifetime());
+		const auto ghost = AddToggle(box, u"Невидимка"_q, GhostValue());
+		ghost->toggledChanges() | rpl::filter([](bool on) {
+			return on != GhostActive();
+		}) | rpl::on_next([=](bool on) {
+			SetGhost(controller, on);
+		}, ghost->lifetime());
+		const auto mute = AddToggle(box, u"Выключить все уведомления"_q, MuteAllValue());
+		mute->toggledChanges() | rpl::filter([](bool on) {
+			return on != MuteAll();
+		}) | rpl::on_next([=](bool on) {
+			SetMuteAll(controller, on);
+		}, mute->lifetime());
+		section(u"Приложение"_q);
+		const auto settings = box->addRow(object_ptr<Ui::SettingsButton>(
+			box,
+			UpdateReadyValue() | rpl::map([](bool ready) {
+				return ready ? u"Настройки Плюма · есть обновления"_q : u"Настройки Плюма"_q;
+			}),
+			st::settingsButtonNoIcon), style::margins());
+		settings->setClickedCallback([=] {
+			box->closeBox();
+			ShowSettingsBox(controller);
+		});
+		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
+	}));
+}
+
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(rpl::single(u"Настройки Плюма"_q));
@@ -2917,7 +3286,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			ShowWaitingBox(controller);
 		});
 		AddHint(box, u"Только те, кто ждёт вашего ответа: личные с новым или где последнее слово за собеседником "
-			u"(за 2 дня), упоминания вам в группах. Из основного списка и архива. Ещё — ☰ → «Ждут меня»."_q);
+			u"(за 2 дня), упоминания вам в группах. Из основного списка и архива. Кнопка «Ждут меня» — над папками."_q);
 
 		section(u"Сводка"_q);
 		const auto noisy = AddToggle(box, u"Шумные чаты — в сводку"_q, rpl::single(NoisyDigest()));
@@ -2942,7 +3311,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			ShowTriageBox(controller);
 		});
 		AddHint(box, u"Люди из списка по одному: в архив, в контакты или оставить. "
-			u"Можно сразу всех, кого нет в контактах, — в архив. Ещё — ☰ → «Разбор чатов»."_q);
+			u"Можно сразу всех, кого нет в контактах, — в архив. Также доступно через «Плюм» над папками."_q);
 		AddLink(box, u"Сводка и чистка"_q)->setClickedCallback([=] {
 			ShowSummaryBox(controller);
 		});
@@ -3115,7 +3484,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 			box->addRow(object_ptr<Ui::FlatLabel>(
 				box,
 				u"Версия "_q + QString::number(kBuild)
-					+ u". Обновления копятся и сами не ставятся: когда появятся, на шестерёнке будет точка, "
+					+ u". Обновления копятся и сами не ставятся: когда появятся, на кнопке «Плюм» будет точка, "
 					u"а здесь — список изменений и кнопка «Обновить сейчас»."_q,
 				st::boxDividerLabel));
 			box->addRow(object_ptr<Ui::LinkButton>(

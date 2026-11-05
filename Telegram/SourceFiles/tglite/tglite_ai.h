@@ -15,6 +15,7 @@ class Session;
 
 namespace Ui {
 class AbstractButton;
+class RpWidget;
 class InputField;
 } // namespace Ui
 
@@ -51,12 +52,12 @@ void ShowAssistantForChat(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
 
-// Круглая кнопка-шестерёнка «Настройки Плюма» рядом с «Takt»: окно настроек в одно нажатие.
-[[nodiscard]] Ui::AbstractButton *CreatePlumeSettingsButton(
+// Быстрые разделы Плюма над папками, отдельно от меню Telegram
+[[nodiscard]] Ui::RpWidget *CreatePlumeNavigation(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
 
-// Круглая кнопка ↻ «Обновить» левее шестерёнки: своя новая версия Плюма в одно нажатие.
+// Круглая кнопка ↻ «Обновить» в шапке: новая версия Плюма в одно нажатие
 [[nodiscard]] Ui::AbstractButton *CreateRefreshButton(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);

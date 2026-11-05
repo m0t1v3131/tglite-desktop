@@ -298,11 +298,11 @@ QJsonArray Tools() {
 			  { u"unmute"_q, Prop(u"boolean"_q, u"включить звук"_q) } },
 			{ u"chat_id"_q }),
 		Tool(u"quiet_chat"_q,
-			u"Убрать чат в «Свои» — личные чаты (друзья, близкие), которые владелец читает, когда захочет: "
-			u"нет в общем списке, папках и архиве, без звука; виден в ☰ → «Свои». Или вернуть в общий список (back). "
+			u"Отметить чат как «Свой» — друзья и близкие: "
+			u"выделен цветом в общем списке и папках, без звука. Или снять отметку (back). "
 			u"«Убери X в свои/в тихие» — это сюда."_q,
 			{ { u"chat_id"_q, Prop(u"string"_q, u"id чата"_q) },
-			  { u"back"_q, Prop(u"boolean"_q, u"вернуть в общий список"_q) } },
+			  { u"back"_q, Prop(u"boolean"_q, u"убрать отметку своего"_q) } },
 			{ u"chat_id"_q }),
 		Tool(u"quiet_news"_q,
 			u"Что нового в «Своих» (бывш. «Тихие»): чаты с id, непрочитанными и последним сообщением. "
@@ -452,7 +452,7 @@ QString SystemPrompt() {
 		u"Перед отправкой, пересылкой и рассылкой клиент сам спросит подтверждение — не переспрашивай лишний раз. "
 		u"Рассылки только небольшие (до 25 чатов), это личный аккаунт — массовые рассылки могут привести к блокировке. "
 		u"Ты умеешь в Telegram почти всё: закрепить/открепить чат (pin_chat, в т.ч. в папке), архив (archive_chat), звук (mute_chat), "
-		u"«Свои» — личные чаты отдельно от общего списка, без звука, или вернуть (quiet_chat), что нового в своих (quiet_news), "
+		u"«Свои» — выделенные цветом личные чаты в общем списке, без звука, или снять отметку (quiet_chat), что нового в своих (quiet_news), "
 		u"прочитано/непрочитано (mark_read), открыть чат на экране (open_chat), удалить папку (delete_folder), "
 		u"искать сообщения по всем чатам или в одном (search_messages — так находи старые переписки), "
 		u"изменить/удалить своё сообщение (edit_message, delete_messages), закрепить сообщение (pin_message), реакция (react), "
@@ -1392,7 +1392,7 @@ private:
 			const auto back = input.value(u"back"_q).toBool();
 			TgLite::SetQuiet(_session, history->peer, !back);
 			add((back ? u"· из своих: «"_q : u"· в свои: «"_q) + history->peer->name() + u"»"_q);
-			done(back ? u"чат вернулся в общий список"_q : u"чат в «Своих»: не в общем списке, без звука, новое — точкой на ☰"_q, false);
+			done(back ? u"Отметка «Свой» убрана"_q : u"Чат в «Своих»: выделен в списке и папках"_q, false);
 		} else if (name == u"quiet_news"_q) {
 			auto lines = QStringList();
 			for (const auto history : TgLite::QuietChats(_session)) {
@@ -3561,7 +3561,7 @@ void SetBron(not_null<Window::SessionController*> controller, not_null<PeerData*
 				: error));
 		} else {
 			strong->showToast(on
-				? u"Плюм ведёт брони в этом чате и сам начнёт разговор"_q
+				? u"Плюм будет подсказывать ответы по броням в этом чате"_q
 				: u"Брони в этом чате остановлены"_q);
 		}
 	});
@@ -3825,50 +3825,7 @@ private:
 
 };
 
-class PlumeSettingsButton final : public Ui::AbstractButton {
-public:
-	explicit PlumeSettingsButton(QWidget *parent) : AbstractButton(parent) {
-		setCursor(style::cur_pointer);
-		resize(st::dialogsLock.height, st::dialogsLock.height);
-		UpdateReadyValue() | rpl::on_next([=](bool ready) {
-			setToolTip(ready
-				? u"Настройки Плюма · накопились обновления"_q
-				: u"Настройки Плюма"_q);
-			update();
-		}, lifetime());
-	}
-
-protected:
-	void paintEvent(QPaintEvent *e) override {
-		auto p = QPainter(this);
-		if (isOver()) {
-			PainterHighQualityEnabler hq(p);
-			const auto h = std::min(height(), style::ConvertScale(30));
-			p.setPen(Qt::NoPen);
-			p.setBrush(st::windowBgOver);
-			p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
-		}
-		st::menuIconSettings.paintInCenter(p, rect());
-		if (UpdateReady()) {
-			// Точка «накопились обновления» — тихо, без окон.
-			PainterHighQualityEnabler hq(p);
-			const auto d = style::ConvertScale(8);
-			const auto icon = st::menuIconSettings.size();
-			const auto x = (width() + icon.width()) / 2 - d + style::ConvertScale(1);
-			const auto y = (height() - icon.height()) / 2 - style::ConvertScale(1);
-			p.setPen(QPen(st::dialogsBg->c, style::ConvertScale(1.5)));
-			p.setBrush(st::activeButtonBg);
-			p.drawEllipse(QRectF(x, y, d, d));
-		}
-	}
-
-	void onStateChanged(State was, StateChangeSource source) override {
-		update();
-	}
-
-};
-
-// ↻ «Обновить» левее шестерёнки: дуга со стрелкой цветом значков меню.
+// ↻ «Обновить» в шапке: дуга со стрелкой цветом значков меню
 class RefreshButton final : public Ui::AbstractButton {
 public:
 	explicit RefreshButton(QWidget *parent) : AbstractButton(parent) {
@@ -4143,14 +4100,132 @@ Ui::AbstractButton *CreateRefreshButton(
 	return result;
 }
 
-Ui::AbstractButton *CreatePlumeSettingsButton(
+namespace {
+
+class PlumeNavigationButton final : public QPushButton {
+public:
+	PlumeNavigationButton(
+		QWidget *parent,
+		const QString &text,
+		const style::icon &icon,
+		bool isHighlighted = false)
+	: QPushButton(text, parent)
+	, _icon(icon)
+	, _isHighlighted(isHighlighted) {
+		setCursor(style::cur_pointer);
+		setMinimumWidth(0);
+		setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+		setAccessibleName(text);
+	}
+
+	void setHasNew(bool hasNew) {
+		_hasNew = hasNew;
+		update();
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		const auto radius = st::plumeNavigationRadius;
+		p.setPen(hasFocus() || _isHighlighted
+			? QPen(st::activeButtonBg->c, hasFocus() ? 2 : 1)
+			: QPen(Qt::NoPen));
+		auto background = st::lightButtonBg->c;
+		if (_isHighlighted) {
+			background = st::activeButtonBg->c;
+			background.setAlpha(32);
+		}
+		p.setBrush(underMouse() || isDown()
+			? st::lightButtonBgOver->c
+			: background);
+		p.drawRoundedRect(rect().adjusted(1, 1, -1, -1), radius, radius);
+		const auto iconArea = QRect(0, 0, width(), st::plumeNavigationIconHeight);
+		_icon.paintInCenter(p, iconArea);
+		p.setPen(_isHighlighted ? st::lightButtonFg->c : st::windowFg->c);
+		p.setFont(st::plumeNavigationFont->f);
+		p.drawText(QRect(0, iconArea.bottom(), width(), height() - iconArea.height()),
+			Qt::AlignHCenter | Qt::AlignVCenter, text());
+		if (_hasNew) {
+			const auto dot = st::plumeNavigationDot;
+			p.setPen(Qt::NoPen);
+			p.setBrush(st::activeButtonBg->c);
+			p.drawEllipse(QRect(width() - dot - st::plumeNavigationMargin,
+				st::plumeNavigationMargin, dot, dot));
+		}
+	}
+
+private:
+	const style::icon &_icon;
+	const bool _isHighlighted;
+	bool _hasNew = false;
+
+};
+
+} // namespace
+
+Ui::RpWidget *CreatePlumeNavigation(
 		not_null<QWidget*> parent,
 		not_null<Window::SessionController*> controller) {
-	const auto result = new PlumeSettingsButton(parent);
-	result->setAccessibleName(u"Настройки Плюма"_q);
-	result->setClickedCallback([=] {
-		ShowSettingsBox(controller);
+	const auto result = new Ui::RpWidget(parent);
+	result->setObjectName(u"plumeNavigation"_q);
+	result->resize(0, st::plumeNavigationHeight);
+	const auto layout = new QVBoxLayout(result);
+	layout->setContentsMargins(st::plumeNavigationMargin, st::plumeNavigationGap,
+		st::plumeNavigationMargin, st::plumeNavigationMargin);
+	layout->setSpacing(st::plumeNavigationGap);
+	const auto center = new QPushButton(u"Плюм  ›"_q, result);
+	center->setObjectName(u"plumeCenter"_q);
+	center->setCursor(style::cur_pointer);
+	center->setFixedHeight(st::plumeNavigationHeaderHeight);
+	center->setFont(st::semiboldFont->f);
+	layout->addWidget(center);
+	QObject::connect(center, &QPushButton::clicked, result, [=] {
+		ShowPlumeBox(controller);
 	});
+	const auto shortcuts = new QHBoxLayout();
+	shortcuts->setSpacing(st::plumeNavigationGap);
+	layout->addLayout(shortcuts, 1);
+	const auto add = [&](const QString &text, const style::icon &icon, Fn<void()> click, bool isHighlighted = false) {
+		const auto button = new PlumeNavigationButton(result, text, icon, isHighlighted);
+		shortcuts->addWidget(button, 1);
+		QObject::connect(button, &QPushButton::clicked, result, [=] {
+			click();
+		});
+		return button;
+	};
+	const auto quiet = add(u"Свои"_q, st::menuIconPlumeCircle,
+		[=] { ShowQuietBox(controller); }, true);
+	QuietUnreadValue(&controller->session()) | rpl::on_next([=](int unread) {
+		quiet->setHasNew(unread > 0);
+		quiet->setToolTip(unread
+			? u"Свои · чатов с новым: %1"_q.arg(unread)
+			: u"Свои · личные чаты без звука"_q);
+		quiet->setAccessibleName(quiet->toolTip());
+	}, result->lifetime());
+	add(u"Ждут меня"_q, st::menuIconReply,
+		[=] { ShowWaitingBox(controller); })
+		->setToolTip(u"Люди, которым вы ещё не ответили"_q);
+	add(u"Сводка"_q, st::menuIconDiscussion,
+		[=] { RequestDigest(controller); })
+		->setToolTip(u"Собрать сводку сейчас"_q);
+	UpdateReadyValue() | rpl::on_next([=](bool ready) {
+		center->setText(ready ? u"Плюм  •  ›"_q : u"Плюм  ›"_q);
+		center->setToolTip(ready
+			? u"Плюм · накопились обновления"_q
+			: u"Плюм · помощник, порядок в чатах и настройки"_q);
+		center->setAccessibleName(center->toolTip());
+	}, result->lifetime());
+	const auto refresh = [=] {
+		center->setStyleSheet(u"QPushButton { background: transparent; color: %1; "
+			"border: none; border-radius: %2px; text-align: left; padding-left: %3px; } "
+			"QPushButton:hover, QPushButton:focus { background: %4; }"_q
+			.arg(Hex(st::lightButtonFg)).arg(st::plumeNavigationRadius)
+			.arg(st::plumeNavigationMargin).arg(Hex(st::windowBgOver)));
+		result->update();
+	};
+	refresh();
+	style::PaletteChanged() | rpl::on_next(refresh, result->lifetime());
 	return result;
 }
 
@@ -4212,6 +4287,9 @@ private:
 // Панель принадлежит полю: закрытие чата уничтожает обработчики и таймеры.
 // В личном чате справа в поле — кнопка «Takt»; по нажатию над полем
 // карточка с вариантами ответа (цвета темы Telegram). Сам Takt не всплывает.
+// Когда человек написал, карточка появляется сама: варианты готовит сервер
+// Плюма (в чатах с бронями — по ответу сайта броней), нажатие кладёт текст
+// в поле, отправляет владелец.
 class ReplySuggestions final : public QWidget {
 public:
 	ReplySuggestions(
@@ -4231,6 +4309,9 @@ public:
 		_watch.setInterval(250);
 		QObject::connect(&_watch, &QTimer::timeout, this, [=] { updateContext(); });
 		_watch.start();
+		_bronPoll.setInterval(4000);
+		QObject::connect(&_bronPoll, &QTimer::timeout, this, [=] { pollBron(); });
+		_bronPoll.start();
 		_field->changes() | rpl::on_next([=] {
 			if (_applying) return;
 			invalidate();
@@ -4313,6 +4394,7 @@ protected:
 		if (e->button() != Qt::LeftButton) return;
 		const auto action = hit(e->pos());
 		if (action == kClose) {
+			if (_bronMode) _bronDismissed = _answers;
 			invalidate();
 			_field->setFocusFast();
 		} else if (action == kRequest) {
@@ -4330,12 +4412,16 @@ private:
 	QString statusText() const {
 		return _loading
 			? u"подбирает ответы…"_q
+			: (_bronMode && _answers.isEmpty())
+			? u"готовит ответ…"_q
+			: _bronMode
+			? u"предлагает ответ"_q
 			: !_error.isEmpty()
 			? _error
 			: u"предлагает"_q;
 	}
 	QString moreText() const {
-		return _answers.isEmpty() ? u"Повторить"_q : u"Ещё"_q;
+		return (_answers.isEmpty() && !_bronMode) ? u"Повторить"_q : u"Ещё"_q;
 	}
 
 	int headerHeight() const { return style::ConvertScale(32); }
@@ -4430,6 +4516,7 @@ private:
 		_answers.clear();
 		_error = QString();
 		_loading = false;
+		_bronMode = false;
 		_over = kNone;
 		_history = _currentHistory();
 		_text = _field->getTextWithTags().text;
@@ -4506,6 +4593,56 @@ private:
 			});
 	}
 
+	void pollBron() {
+		const auto history = _currentHistory();
+		const auto window = _field->window();
+		if (_bronRequest || !history || !BronAvailable(history->peer)
+			|| !window->isVisible() || window->isMinimized()) {
+			return;
+		}
+		auto request = QNetworkRequest(QUrl(QString::fromLatin1(kBronUrl)
+			+ '/' + QString::number(peerToUser(history->peer->id).bare)));
+		request.setRawHeader("X-Lite-Key", AiKey().toUtf8());
+		request.setTransferTimeout(20000);
+		const auto reply = Net()->get(request);
+		const auto guard = QPointer<ReplySuggestions>(this);
+		_bronRequest = true;
+		QObject::connect(reply, &QNetworkReply::finished, [=] {
+			reply->deleteLater();
+			if (!guard) return;
+			_bronRequest = false;
+			if (reply->error() != QNetworkReply::NoError
+				|| _currentHistory() != history) {
+				return;
+			}
+			const auto data = QJsonDocument::fromJson(reply->readAll()).object();
+			auto variants = QStringList();
+			for (const auto &v : data.value(u"variants"_q).toArray()) {
+				if (!v.toString().trimmed().isEmpty()) variants.push_back(v.toString());
+			}
+			showBron(variants, data.value(u"busy"_q).toBool());
+		});
+	}
+
+	// Не мешаем: владелец пишет сам, ждёт ответ Takt или закрыл эти варианты.
+	void showBron(const QStringList &variants, bool isBusy) {
+		if (_loading || (isVisible() && !_bronMode)
+			|| !_field->getTextWithTags().text.isEmpty()) {
+			return;
+		}
+		if (variants != _bronDismissed) _bronDismissed.clear();
+		if (!_bronDismissed.isEmpty() || (variants.isEmpty() && !isBusy)) {
+			if (_bronMode) invalidate();
+			return;
+		}
+		if (_bronMode && _answers == variants && isVisible()) return;
+		invalidate();
+		_bronMode = true;
+		_answers = variants;
+		show();
+		updateContext();
+	}
+
 	not_null<Ui::InputField*> _field;
 	not_null<Window::SessionController*> _controller;
 	Fn<History*()> _currentHistory;
@@ -4515,12 +4652,16 @@ private:
 	QString _text;
 	QString _error;
 	QTimer _watch;
+	QTimer _bronPoll;
+	QStringList _bronDismissed;
 	int _generation = 0;
 	int _over = kNone;
 	int _fieldMargin = -1;
 	int _singleHeight = 0;
 	bool _loading = false;
 	bool _applying = false;
+	bool _bronMode = false;
+	bool _bronRequest = false;
 };
 } // namespace
 

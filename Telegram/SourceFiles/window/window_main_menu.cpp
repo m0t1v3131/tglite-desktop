@@ -772,88 +772,11 @@ void MainMenu::setupMenu() {
 		});
 	}
 	addAction(
-		rpl::single(u"Настройки Плюма"_q),
-		{ &st::menuIconExperimental }
-	)->setClickedCallback([=] {
-		TgLite::ShowSettingsBox(controller);
-	});
-	addAction(
-		rpl::single(u"Ждут меня"_q),
-		{ &st::menuIconReply }
-	)->setClickedCallback([=] {
-		TgLite::ShowWaitingBox(controller);
-	});
-	addAction(
-		rpl::single(u"Сводка сейчас"_q),
-		{ &st::menuIconDiscussion }
-	)->setClickedCallback([=] {
-		TgLite::RequestDigest(controller);
-	});
-	addAction(
-		rpl::single(u"Разбор чатов"_q),
-		{ &st::menuIconArchive }
-	)->setClickedCallback([=] {
-		TgLite::ShowTriageBox(controller);
-	});
-	addAction(
-		rpl::single(u"Сводка и чистка"_q),
-		{ &st::menuIconStats }
-	)->setClickedCallback([=] {
-		TgLite::ShowSummaryBox(controller);
-	});
-	addAction(
-		TgLite::QuietUnreadValue(&controller->session()) | rpl::map([](int unread) {
-			return unread ? (u"Свои  ● "_q + QString::number(unread)) : u"Свои"_q;
-		}),
-		{ &st::menuIconPlumeCircle }
-	)->setClickedCallback([=] {
-		TgLite::ShowQuietBox(controller);
-	});
-	addAction(
 		tr::lng_menu_settings(),
 		{ &st::menuIconSettings }
 	)->setClickedCallback([=] {
 		controller->showSettings();
 	});
-	addAction(
-		rpl::single(u"Помощник (Ctrl+T)"_q),
-		{ &st::menuIconBotCommands }
-	)->setClickedCallback([=] {
-		TgLite::ShowAssistant(controller);
-	});
-	addAction(
-		rpl::single(u"Фокус-режим"_q),
-		{ &st::menuIconMute }
-	)->toggleOn(
-		TgLite::FocusValue()
-	)->toggledChanges(
-	) | rpl::filter([](bool on) {
-		return (on != TgLite::FocusActive());
-	}) | rpl::on_next([=](bool on) {
-		TgLite::SetFocus(controller, on);
-	}, _menu->lifetime());
-	addAction(
-		rpl::single(u"Невидимка"_q),
-		{ &st::menuIconStealth }
-	)->toggleOn(
-		TgLite::GhostValue()
-	)->toggledChanges(
-	) | rpl::filter([](bool on) {
-		return (on != TgLite::GhostActive());
-	}) | rpl::on_next([=](bool on) {
-		TgLite::SetGhost(controller, on);
-	}, _menu->lifetime());
-	addAction(
-		rpl::single(u"Выключить все уведомления"_q),
-		{ &st::menuIconMute }
-	)->toggleOn(
-		TgLite::MuteAllValue()
-	)->toggledChanges(
-	) | rpl::filter([](bool on) {
-		return (on != TgLite::MuteAll());
-	}) | rpl::on_next([=](bool on) {
-		TgLite::SetMuteAll(controller, on);
-	}, _menu->lifetime());
 
 	_nightThemeToggle = addAction(
 		tr::lng_menu_night_mode(),

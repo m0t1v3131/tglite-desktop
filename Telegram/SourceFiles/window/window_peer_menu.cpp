@@ -316,6 +316,7 @@ private:
 	void addToggleUnreadMark();
 	void addToggleArchive();
 	void addToggleQuiet(); // Плюм
+	void addSnooze(bool inChat); // Плюм
 	void addClearHistory();
 	void addDeleteChat();
 	void addLeaveChat();
@@ -1906,7 +1907,7 @@ void Filler::addVideoChat() {
 	});
 }
 
-// Плюм: «В свои» / «Убрать из своих» — чат пропадает из списка, папок и архива, без уведомлений
+// Плюм: «В свои» / «Убрать из своих» — цветное выделение в списке и папках
 void Filler::addToggleQuiet() {
 	if (!_peer || _peer->isSelf() || _request.key.topic() || _request.key.sublist()) {
 		return;
@@ -1917,9 +1918,32 @@ void Filler::addToggleQuiet() {
 	_addAction(quiet ? u"Убрать из своих"_q : u"В свои"_q, [=] {
 		TgLite::SetQuiet(&peer->session(), peer, !quiet);
 		controller->showToast(quiet
-			? u"Чат вернулся в общий список"_q
-			: u"Чат в «Своих»: без звука, не в общем списке, найти — ☰ → «Свои»"_q);
+			? u"Отметка «Свой» убрана"_q
+			: u"Чат в «Своих»: выделен в списке и папках"_q);
 	}, &st::menuIconPlumeCircle);
+}
+
+// Плюм: «Отложить ответ» и «Прочитать незаметно» — в списке чатов; внутри незаметного чата — «Отметить прочитанным»
+void Filler::addSnooze(bool inChat) {
+	if (!_peer || _peer->isSelf() || _request.key.topic() || _request.key.sublist()) {
+		return;
+	}
+	const auto peer = _peer;
+	const auto history = peer->owner().history(peer);
+	const auto controller = _controller;
+	if (!inChat) {
+		_addAction(u"Прочитать незаметно"_q, [=] {
+			TgLite::OpenStealth(controller, peer);
+		}, &st::menuIconStealth);
+	} else if (TgLite::StealthReading(history)) {
+		_addAction(u"Отметить прочитанным"_q, [=] {
+			TgLite::MarkStealthRead(history);
+			controller->showToast(u"Отмечено прочитанным — собеседник это видит"_q);
+		}, &st::menuIconMarkRead);
+	}
+	_addAction(TgLite::IsSnoozed(history) ? u"Отложено: срок, отмена"_q : u"Отложить ответ"_q, [=] {
+		TgLite::ShowSnoozeBox(controller, history);
+	}, &st::menuIconSchedule);
 }
 
 void Filler::fillContextMenuActions() {
@@ -1939,6 +1963,7 @@ void Filler::fillContextMenuActions() {
 		}, &st::menuIconBot);
 	}
 	addToggleQuiet();
+	addSnooze(false);
 	// Плюм: «Взаимодействие по броням» — Плюм на сервере сам переписывается с человеком о брони залов
 	if (_peer && TgLite::BronAvailable(_peer)) {
 		const auto peer = _peer;
@@ -1977,6 +2002,7 @@ void Filler::fillContextMenuActions() {
 void Filler::fillHistoryActions() {
 	addToggleMuteSubmenu(true);
 	addToggleQuiet();
+	addSnooze(true);
 	addCreateTopic();
 	addInfo();
 	addViewAsTopics();

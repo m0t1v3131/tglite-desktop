@@ -3208,6 +3208,9 @@ void History::setChatListMessage(HistoryItem *item) {
 		_chatListMessage = item;
 		setChatListTimeId(item->date());
 		resolveChatListMessageGroup();
+		if (TgLite::IsSnoozed(this)) {
+			updateChatListExistence(); // Плюм: новое в отложенном чате — снова в списке
+		}
 	} else if (!_chatListMessage || *_chatListMessage) {
 		_chatListMessage = nullptr;
 		updateChatListEntry();
@@ -3478,8 +3481,8 @@ bool History::shouldBeInChatList() const {
 		return false; // Плюм: бот Такт спрятан — с ним работает Помощник
 	} else if (TgLite::ArchiveJunkHidden(this)) {
 		return false; // Плюм: в архиве без чужих каналов и открытых групп
-	} else if (TgLite::QuietHidden(this)) {
-		return false; // Плюм: «Свои» — только в ☰ → «Свои»
+	} else if (TgLite::SnoozeHidden(this)) {
+		return false; // Плюм: «Отложить ответ» — до срока, пока нет нового
 	} else if (TgLite::NoisyHidden(this)) {
 		return false; // Плюм: «Сводка» — шумные чаты пересказывает бот Плюм
 	} else if (peer->migrateTo() || !folderKnown()) {

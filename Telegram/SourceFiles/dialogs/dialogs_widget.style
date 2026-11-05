@@ -64,3 +64,12 @@ dialogsCommunityRequestsBubbleIconMargin: 9px;
 dialogsCommunityRequestsBubbleTextSkip: 48px;
 dialogsCommunityRequestsBubbleRightInset: 9px;
 dialogsCommunityRequestsBubbleRadius: 11px;
+
+plumeNavigationHeight: 96px;
+plumeNavigationMargin: 8px;
+plumeNavigationGap: 4px;
+plumeNavigationHeaderHeight: 28px;
+plumeNavigationRadius: 10px;
+plumeNavigationIconHeight: 30px;
+plumeNavigationDot: 6px;
+plumeNavigationFont: font(11px);
