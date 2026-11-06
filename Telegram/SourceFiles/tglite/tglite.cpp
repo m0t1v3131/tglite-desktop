@@ -3278,7 +3278,7 @@ void ShowPlumeBox(not_null<Window::SessionController*> controller) {
 			box->closeBox();
 			ShowSettingsBox(controller);
 		});
-		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
 	}));
 }
 
