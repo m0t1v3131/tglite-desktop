@@ -29,6 +29,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "data/data_thread.h"
 #include "data/data_user.h"
 #include "dialogs/dialogs_indexed_list.h"
+#include "dialogs/dialogs_key.h"
 #include "dialogs/dialogs_main_list.h"
 #include "dialogs/dialogs_row.h"
 #include "history/history.h"
@@ -51,12 +52,18 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
+#include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/buttons.h"
 #include "ui/wrap/vertical_layout.h"
+#include "ui/wrap/slide_wrap.h"
+#include "ui/widgets/discrete_sliders.h"
+#include "ui/vertical_list.h"
+#include "settings/settings_common.h"
 #include "ui/painter.h"
 #include "ui/rp_widget.h"
 #include "window/window_controller.h"
+#include "window/window_peer_menu.h"
 #include "window/notifications_manager.h"
 #include "mainwindow.h"
 #include "window/window_session_controller.h"
@@ -2175,6 +2182,10 @@ std::vector<not_null<History*>> QuietChats(not_null<Main::Session*> session) {
 	ranges::sort(result, ranges::greater(), [](not_null<History*> history) {
 		return history->chatListTimeId();
 	});
+	// Закреплённые — наверху, как в общем списке
+	std::stable_partition(result.begin(), result.end(), [](not_null<History*> history) {
+		return history->isPinnedDialog(FilterId());
+	});
 	return result;
 }
 
@@ -2291,6 +2302,7 @@ public:
 		rpl::single(rpl::empty) | rpl::then(rpl::merge(
 			QuietStream().events(),
 			session->data().newItemAdded() | rpl::to_empty,
+			session->data().pinnedDialogsOrderUpdated(),
 			session->changes().historyUpdates(
 				Data::HistoryUpdate::Flag::UnreadView) | rpl::to_empty
 		)) | rpl::on_next([=] {
@@ -2307,14 +2319,17 @@ public:
 	base::unique_qptr<Ui::PopupMenu> rowContextMenu(
 			QWidget *parent,
 			not_null<PeerListRow*> row) override {
-		const auto peer = row->peer();
-		const auto session = &_window->session();
 		auto result = base::make_unique_q<Ui::PopupMenu>(
 			parent,
 			st::popupMenuWithIcons);
-		result->addAction(u"Убрать из своих"_q, [=] {
-			SetQuiet(session, peer, false);
-		}, &st::menuIconPlumeCircle);
+		// То же меню, что в общем списке: закрепить, без звука, архив, «Убрать из своих»
+		Window::FillDialogsEntryMenu(
+			_window,
+			Dialogs::EntryState{
+				.key = Dialogs::Key(_window->session().data().history(row->peer())),
+				.section = Dialogs::EntryState::Section::ContextMenu,
+			},
+			Ui::Menu::CreateAddActionCallback(result));
 		return result;
 	}
 
@@ -3267,183 +3282,284 @@ void ShowPlumeBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
+constexpr auto kCardNotes = 3;
+
+// Не больше трёх пунктов, чтобы вкладки оставались на виду
+QString ShortPendingNotes() {
+	const auto &notes = Pending().notes;
+	if (notes.isEmpty()) {
+		return u"• новая версия"_q;
+	}
+	auto lines = QStringList();
+	for (auto i = 0; i != std::min(int(notes.size()), kCardNotes); ++i) {
+		lines.push_back(u"• "_q + notes[i]);
+	}
+	if (notes.size() > kCardNotes) {
+		lines.push_back(u"…и ещё "_q + QString::number(notes.size() - kCardNotes));
+	}
+	return lines.join('\n');
+}
+
+// Карточка обновлений — первой строкой настроек; «Обновить» только по нажатию владельца
+void AddUpdateCard(not_null<Ui::VerticalLayout*> to, not_null<Ui::GenericBox*> box) {
+	const auto ready = (Pending().build > kBuild);
+	const auto pad = st::boxRowPadding.left() / 2;
+	const auto card = to->add(
+		object_ptr<Ui::RpWidget>(to),
+		style::margins(st::boxRowPadding.left(), 0, st::boxRowPadding.right(), pad));
+	const auto title = Ui::CreateChild<Ui::FlatLabel>(
+		card,
+		ready
+			? (u"Накопились обновления ("_q
+				+ QString::number(std::max(int(Pending().notes.size()), 1)) + u")"_q)
+			: (u"Плюм, версия "_q + QString::number(kBuild)),
+		st::boxLabel);
+	const auto notes = Ui::CreateChild<Ui::FlatLabel>(
+		card,
+		ready
+			? ShortPendingNotes()
+			: u"Новых нет. Сами не ставятся — когда появятся, здесь будет «Обновить»."_q,
+		st::boxDividerLabel);
+	const auto button = Ui::CreateChild<Ui::RoundButton>(
+		card,
+		rpl::single(ready ? u"Обновить"_q : u"Проверить"_q),
+		ready ? st::defaultActiveButton : st::defaultLightButton);
+	button->setTextTransform(Ui::RoundButtonTextTransform::NoTransform);
+	const auto updateUrl = Pending().url;
+	button->setClickedCallback([=] {
+		if (ready) {
+			box->closeBox();
+			InstallUpdate(updateUrl);
+		} else {
+			CheckUpdates(true);
+		}
+	});
+	card->widthValue() | rpl::on_next([=](int width) {
+		const auto textWidth = width - 3 * pad - button->width();
+		title->resizeToWidth(textWidth);
+		notes->resizeToWidth(textWidth);
+		title->moveToLeft(pad, pad);
+		notes->moveToLeft(pad, pad + title->height());
+		const auto height = std::max(
+			2 * pad + title->height() + notes->height(),
+			2 * pad + button->height());
+		button->moveToLeft(width - pad - button->width(), (height - button->height()) / 2);
+		card->resize(width, height);
+	}, card->lifetime());
+	card->paintRequest() | rpl::on_next([=] {
+		auto p = QPainter(card);
+		auto hq = PainterHighQualityEnabler(p);
+		if (ready) {
+			p.setPen(QPen(st::activeButtonBg, 2));
+		} else {
+			p.setPen(Qt::NoPen);
+		}
+		p.setBrush(st::boxDividerBg);
+		p.drawRoundedRect(QRectF(card->rect()).marginsRemoved({ 1., 1., 1., 1. }), st::boxRadius, st::boxRadius);
+	}, card->lifetime());
+}
+
 void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(rpl::single(u"Настройки Плюма"_q));
+		box->setWidth(st::boxWideWidth);
+		// Одна высота для всех вкладок — окно не прыгает при переключении
+		box->setMinHeight(st::boxMaxListHeight);
+		box->setMaxHeight(st::boxMaxListHeight);
 		const auto session = &controller->session();
-		const auto section = [=](const QString &title) {
-			box->addRow(
-				object_ptr<Ui::FlatLabel>(box, title, st::defaultSubsectionTitle),
-				st::defaultSubsectionTitlePadding);
+
+		// Сверху, не прокручивается: обновления и вкладки (просьба владельца 06.11: «обновления пусть сверху будут»)
+		const auto top = box->setPinnedToTopContent(object_ptr<Ui::VerticalLayout>(box));
+		AddUpdateCard(top, box);
+		const auto tabs = top->add(object_ptr<Ui::SettingsSlider>(top, st::defaultTabsSlider));
+		tabs->setSections({
+			u"Чаты"_q,
+			u"Тишина"_q,
+			u"Помощники"_q,
+			u"Связь"_q,
+		});
+
+		auto pages = std::vector<not_null<Ui::SlideWrap<Ui::VerticalLayout>*>>();
+		const auto page = [&] {
+			const auto wrap = box->addRow(
+				object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+					box,
+					object_ptr<Ui::VerticalLayout>(box)),
+				style::margins());
+			wrap->toggle(pages.empty(), anim::type::instant);
+			pages.push_back(wrap);
+			return wrap->entity();
+		};
+		const auto title = [](not_null<Ui::VerticalLayout*> to, const QString &text) {
+			Ui::AddSubsectionTitle(to, rpl::single(text));
+		};
+		const auto link = [](
+				not_null<Ui::VerticalLayout*> to,
+				const QString &text,
+				const style::icon &icon) {
+			return Settings::AddButtonWithIcon(to, rpl::single(text), st::settingsButton, { &icon });
+		};
+		const auto toggle = [](
+				not_null<Ui::VerticalLayout*> to,
+				const QString &text,
+				const style::icon &icon,
+				rpl::producer<bool> value) {
+			const auto button = Settings::AddButtonWithIcon(
+				to,
+				rpl::single(text),
+				st::settingsButton,
+				{ &icon });
+			button->toggleOn(std::move(value));
+			return button;
+		};
+		const auto hint = [](not_null<Ui::VerticalLayout*> to, const QString &text) {
+			Ui::AddDividerText(to, rpl::single(text));
+		};
+		const auto closeAnd = [=](Fn<void()> action) {
+			return [=] {
+				box->closeBox();
+				action();
+			};
 		};
 
-		AddHint(box, u"Одни на телефоне, ПК и Mac: переключили здесь — через пару минут так же везде "
-			u"(кроме VPN и аккаунтов)."_q);
-
-		section(u"Ждут меня"_q);
-		AddLink(box, u"Ждут меня"_q)->setClickedCallback([=] {
-			box->closeBox();
-			ShowWaitingBox(controller);
+		// ---------- Чаты ----------
+		const auto chats = page();
+		Ui::AddSkip(chats);
+		link(chats, u"Ждут меня"_q, st::menuIconChatBubble)->setClickedCallback(
+			closeAnd([=] { ShowWaitingBox(controller); }));
+		link(chats, u"Разбор чатов"_q, st::menuIconArchive)->setClickedCallback(
+			closeAnd([=] { ShowTriageBox(controller); }));
+		link(chats, u"Сводка и чистка"_q, st::menuIconClear)->setClickedCallback([=] {
+			ShowSummaryBox(controller);
 		});
-		AddHint(box, u"Только те, кто ждёт вашего ответа: личные с новым или где последнее слово за собеседником "
-			u"(за 2 дня), упоминания вам в группах. Из основного списка и архива. Кнопка «Ждут меня» — над папками."_q);
-
-		section(u"Сводка"_q);
-		const auto noisy = AddToggle(box, u"Шумные чаты — в сводку"_q, rpl::single(NoisyDigest()));
+		Ui::AddSkip(chats);
+		hint(chats, u"«Ждут меня» — кто ждёт вашего ответа. Разбор — люди по одному: в архив, в контакты или оставить."_q);
+		Ui::AddSkip(chats);
+		title(chats, u"Сводка"_q);
+		const auto noisy = toggle(chats, u"Шумные чаты — в сводку"_q, st::menuIconChannel, rpl::single(NoisyDigest()));
 		noisy->toggledChanges() | rpl::on_next([=](bool on) {
 			SetNoisyDigest(session, on);
 		}, noisy->lifetime());
-		AddLink(box, u"Сводка сейчас"_q)->setClickedCallback([=] {
-			box->closeBox();
-			RequestDigest(controller);
-		});
-		AddLink(box, u"Все сводки — бот Плюм"_q)->setClickedCallback([=] {
-			box->closeBox();
-			OpenDigestChat(controller);
-		});
-		AddHint(box, u"Шумные чаты — чужие каналы и группы без звука (кроме закреплённых и ваших) — не видны в списке. "
-			u"В 9:00 и 19:00 бот Плюм присылает короткий пересказ их нового: что касается вас, что важного, "
-			u"ссылки на сообщения. Сами чаты остаются непрочитанными."_q);
+		link(chats, u"Сводка сейчас"_q, st::menuIconShowAll)->setClickedCallback(
+			closeAnd([=] { RequestDigest(controller); }));
+		link(chats, u"Все сводки — бот Плюм"_q, st::menuIconShowInChat)->setClickedCallback(
+			closeAnd([=] { OpenDigestChat(controller); }));
+		Ui::AddSkip(chats);
+		hint(chats, u"Чужие каналы и группы без звука не видны в списке. В 9:00 и 19:00 бот Плюм "
+			u"пересказывает их новое, сами чаты остаются непрочитанными."_q);
+		Ui::AddSkip(chats);
+		title(chats, u"Список и архив"_q);
+		const auto stories = toggle(chats, u"Скрыть истории"_q, st::menuIconStoriesArchiveSection, rpl::single(HideStories()));
+		stories->toggledChanges() | rpl::on_next([](bool on) {
+			SetState(u"hideStories"_q, on);
+		}, stories->lifetime());
+		const auto recent = toggle(chats, u"Скрыть недавние в поиске"_q, st::menuIconSearch, rpl::single(HideRecentSearch()));
+		recent->toggledChanges() | rpl::on_next([](bool on) {
+			SetState(u"hideRecentSearch"_q, on);
+		}, recent->lifetime());
+		const auto junk = toggle(chats, u"Архив без чужих каналов и групп"_q, st::menuIconArchiveOpen, rpl::single(HideArchiveJunkFlag()));
+		junk->toggledChanges() | rpl::on_next([=](bool on) {
+			SetHideArchiveJunk(session, on);
+		}, junk->lifetime());
+		const auto bots = toggle(chats, u"Архив без чужих ботов"_q, st::menuIconBotCommands, rpl::single(HideArchiveBotsFlag()));
+		bots->toggledChanges() | rpl::on_next([=](bool on) {
+			SetHideArchiveBots(session, on);
+		}, bots->lifetime());
+		Ui::AddSkip(chats);
+		hint(chats, u"Настройки общие для телефона, ПК и Mac: поменяли здесь — через пару минут так же везде "
+			u"(кроме VPN и аккаунтов)."_q);
 
-		section(u"Чистка"_q);
-		AddLink(box, u"Разбор чатов"_q)->setClickedCallback([=] {
-			box->closeBox();
-			ShowTriageBox(controller);
-		});
-		AddHint(box, u"Люди из списка по одному: в архив, в контакты или оставить. "
-			u"Можно сразу всех, кого нет в контактах, — в архив. Также доступно через «Плюм» над папками."_q);
-		AddLink(box, u"Сводка и чистка"_q)->setClickedCallback([=] {
-			ShowSummaryBox(controller);
-		});
-
-		section(u"Тишина"_q);
-		const auto ghost = AddToggle(box, u"Невидимка"_q, GhostValue());
+		// ---------- Тишина ----------
+		const auto calm = page();
+		Ui::AddSkip(calm);
+		const auto ghost = toggle(calm, u"Невидимка"_q, st::menuIconStealth, GhostValue());
 		ghost->toggledChanges() | rpl::filter([](bool on) {
 			return on != GhostActive();
 		}) | rpl::on_next([=](bool on) {
 			SetGhost(controller, on);
 		}, ghost->lifetime());
-		AddHint(box, u"Для всех вы «не в сети», без «печатает…»."_q);
-		const auto focus = AddToggle(box, u"Фокус"_q, FocusValue());
+		const auto focus = toggle(calm, u"Фокус"_q, st::menuIconTagFilter, FocusValue());
 		focus->toggledChanges() | rpl::filter([](bool on) {
 			return on != FocusActive();
 		}) | rpl::on_next([=](bool on) {
 			SetFocus(controller, on);
 		}, focus->lifetime());
-		AddLink(box, u"Чаты фокуса: "_q + QString::number(Focus().chats.size()))->setClickedCallback([=] {
+		link(calm, u"Чаты фокуса: "_q + QString::number(Focus().chats.size()), st::menuIconSelect)->setClickedCallback([=] {
 			ShowFocusBox(controller);
 		});
-		const auto muteAll = AddToggle(box, u"Выключить все уведомления"_q, MuteAllValue());
+		Ui::AddSkip(calm);
+		hint(calm, u"Невидимка — для всех вы «не в сети», без «печатает…». Фокус — то же, и выбранные чаты пропадают из списка."_q);
+		Ui::AddSkip(calm);
+		title(calm, u"Уведомления"_q);
+		const auto muteAll = toggle(calm, u"Выключить все уведомления"_q, st::menuIconMute, MuteAllValue());
 		muteAll->toggledChanges() | rpl::filter([](bool on) {
 			return on != MuteAll();
 		}) | rpl::on_next([=](bool on) {
 			SetMuteAll(controller, on);
 		}, muteAll->lifetime());
-		const auto quiet = AddToggle(box, u"Тихие группы"_q, rpl::single(QuietGroups()));
+		const auto quiet = toggle(calm, u"Тихие группы"_q, st::menuIconGroups, rpl::single(QuietGroups()));
 		quiet->toggledChanges() | rpl::on_next([](bool on) {
 			SetQuietGroups(on);
 		}, quiet->lifetime());
-		AddHint(box, u"Группы, где у вас больше 30 непрочитанных, не присылают уведомлений — "
-			u"кроме упоминаний и ответов вам."_q);
+		Ui::AddSkip(calm);
+		hint(calm, u"Тихие группы — где больше 30 непрочитанных, приходят без звука; упоминания и ответы вам — как обычно."_q);
 
-		section(u"Список чатов"_q);
-		const auto stories = AddToggle(box, u"Скрыть истории"_q, rpl::single(HideStories()));
-		stories->toggledChanges() | rpl::on_next([](bool on) {
-			SetState(u"hideStories"_q, on);
-		}, stories->lifetime());
-		const auto recent = AddToggle(box, u"Скрыть недавние в поиске"_q, rpl::single(HideRecentSearch()));
-		recent->toggledChanges() | rpl::on_next([](bool on) {
-			SetState(u"hideRecentSearch"_q, on);
-		}, recent->lifetime());
-
-		section(u"Архив"_q);
-		const auto junk = AddToggle(box, u"Без чужих каналов и открытых групп"_q, rpl::single(HideArchiveJunkFlag()));
-		junk->toggledChanges() | rpl::on_next([=](bool on) {
-			SetHideArchiveJunk(session, on);
-		}, junk->lifetime());
-		const auto bots = AddToggle(box, u"Без чужих ботов"_q, rpl::single(HideArchiveBotsFlag()));
-		bots->toggledChanges() | rpl::on_next([=](bool on) {
-			SetHideArchiveBots(session, on);
-		}, bots->lifetime());
-		AddHint(box, u"Свои каналы и боты, закреплённое и личные чаты остаются."_q);
-
-		section(u"Помощник"_q);
-		AddLink(box, u"Открыть помощника (Ctrl+T)"_q)->setClickedCallback([=] {
-			box->closeBox();
-			ShowAssistant(controller);
-		});
-		const auto taktOpen = AddToggle(
-			box,
+		// ---------- Помощники ----------
+		const auto helpers = page();
+		Ui::AddSkip(helpers);
+		link(helpers, u"Открыть помощника (Ctrl+T)"_q, st::menuIconDiscussion)->setClickedCallback(
+			closeAnd([=] { ShowAssistant(controller); }));
+		const auto taktOpen = toggle(
+			helpers,
 			u"Открывать при запуске Плюма"_q,
+			st::menuIconSchedule,
 			rpl::single(ReadState().value(u"taktOpen"_q).toBool(true)));
 		taktOpen->toggledChanges() | rpl::on_next([](bool on) {
 			SetState(u"taktOpen"_q, on);
 		}, taktOpen->lifetime());
-		const auto hideBot = AddToggle(box, u"Спрятать бота Такт"_q, rpl::single(HideTaktBot()));
+		const auto hideBot = toggle(helpers, u"Спрятать бота Такт"_q, st::menuIconBot, rpl::single(HideTaktBot()));
 		hideBot->toggledChanges() | rpl::on_next([=](bool on) {
-			SetHideTaktBot(&controller->session(), on);
+			SetHideTaktBot(session, on);
 		}, hideBot->lifetime());
-		AddHint(box, u"Чат с @takt52_bot не виден в списке и не присылает уведомлений — "
-			u"всё с ним делает Помощник. Сам бот работает и отвечает людям, как раньше."_q);
-
-		section(u"Маяк"_q);
-		AddLink(box, u"Открыть Маяк"_q)->setClickedCallback([=] {
-			box->closeBox();
-			OpenMayak(controller);
-		});
-		const auto hideMayak = AddToggle(box, u"Спрятать бота Маяка"_q, rpl::single(HideMayakBot()));
+		Ui::AddSkip(helpers);
+		hint(helpers, u"Спрятанный @takt52_bot не виден в списке и молчит — всё с ним делает Помощник, людям бот отвечает как раньше."_q);
+		Ui::AddSkip(helpers);
+		title(helpers, u"Маяк"_q);
+		link(helpers, u"Открыть Маяк"_q, st::menuIconLink)->setClickedCallback(
+			closeAnd([=] { OpenMayak(controller); }));
+		const auto hideMayak = toggle(helpers, u"Спрятать бота Маяка"_q, st::menuIconBot, rpl::single(HideMayakBot()));
 		hideMayak->toggledChanges() | rpl::on_next([=](bool on) {
-			SetHideMayakBot(&controller->session(), on);
+			SetHideMayakBot(session, on);
 		}, hideMayak->lifetime());
-		AddHint(box, u"Маяк — кнопка-маяк над чатами рядом с Помощником, вход без пароля. "
-			u"«В Маяк» в меню сообщения — новый чат в Маяке с этим сообщением. Помощнику можно сказать "
-			u"«поставь задачу в Маяк…» или «что в Маяке?». Спрятанный бот не виден в чатах, уведомления от него приходят."_q);
+		Ui::AddSkip(helpers);
+		hint(helpers, u"«В Маяк» в меню сообщения — новый чат в Маяке с ним. Помощнику можно сказать «поставь задачу в Маяк…». "
+			u"Спрятанный бот не виден в чатах, уведомления от него приходят."_q);
 
-		section(u"Аккаунты"_q);
-		for (const auto &account : Core::App().domain().orderedAccounts()) {
-			if (!account->sessionExists()) {
-				continue;
-			}
-			const auto hide = AddToggle(
-				box,
-				u"Скрыть: "_q + AccountTitle(account),
-				rpl::single(AccountHidden(account)));
-			hide->toggledChanges() | rpl::on_next([=](bool on) {
-				SetAccountHidden(account, on);
-			}, hide->lifetime());
-		}
-		AddHint(box, u"До 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». Скрытые не видны в списке "
-			u"(кроме открытого), без уведомлений и непрочитанных; открыть — «Скрытые аккаунты» под списком. "
-			u"Все аккаунты со всех устройств — plume.amdiveev.ru/accounts."_q);
-
-		section(u"VPN StealthSurf"_q);
-		box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			u"Плюм работает через вашу подписку, остальные программы не затрагиваются. "
-			u"Ссылка — в личном кабинете StealthSurf или в Happ."_q,
-			st::boxLabel));
-		const auto url = box->addRow(object_ptr<Ui::InputField>(
-			box,
-			st::defaultInputField,
-			rpl::single(u"Ссылка на подписку"_q),
-			VpnUrl()));
-		const auto enabled = AddToggle(
-			box,
-			u"Плюм через VPN"_q,
-			rpl::single(VpnEnabled()));
+		// ---------- Связь ----------
+		const auto connection = page();
+		Ui::AddSkip(connection);
+		title(connection, u"VPN StealthSurf"_q);
+		const auto enabled = toggle(connection, u"Плюм через VPN"_q, st::menuIconIpAddress, rpl::single(VpnEnabled()));
+		const auto url = connection->add(
+			object_ptr<Ui::InputField>(
+				connection,
+				st::defaultInputField,
+				rpl::single(u"Ссылка на подписку"_q),
+				VpnUrl()),
+			st::boxRowPadding);
 		const auto list = Parse(ReadSubscription());
-		const auto status = box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			Xray
-				? (u"Работает, сервер: "_q + ((VpnServer() < int(list.size()))
-					? list[VpnServer()].name
-					: QString()))
-				: (LastError.isEmpty() ? u"VPN выключен"_q : (u"Ошибка: "_q + LastError)),
-			st::boxDividerLabel));
+		const auto status = connection->add(
+			object_ptr<Ui::FlatLabel>(
+				connection,
+				Xray
+					? (u"Работает, сервер: "_q + ((VpnServer() < int(list.size()))
+						? list[VpnServer()].name
+						: QString()))
+					: (LastError.isEmpty() ? u"VPN выключен"_q : (u"Ошибка: "_q + LastError)),
+				st::boxDividerLabel),
+			st::boxRowPadding);
 		if (!list.empty()) {
-			box->addRow(object_ptr<Ui::LinkButton>(
-				box,
-				u"Выбрать сервер"_q))->setClickedCallback([=] {
+			link(connection, u"Выбрать сервер"_q, st::menuIconSettings)->setClickedCallback([=] {
 				auto names = std::vector<QString>();
 				for (const auto &entry : list) {
 					names.push_back(entry.name);
@@ -3463,41 +3579,43 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				}));
 			});
 		}
-		section(u"Обновления"_q);
-		if (Pending().build > kBuild) {
-			box->addRow(object_ptr<Ui::FlatLabel>(
-				box,
-				u"Версия "_q + QString::number(kBuild)
-					+ u". Накопились обновления ("_q
-					+ QString::number(std::max(int(Pending().notes.size()), 1))
-					+ u"):\n"_q
-					+ (Pending().notes.isEmpty() ? u"• новая версия"_q : PendingNotesText()),
-				st::boxDividerLabel));
-			const auto updateUrl = Pending().url;
-			box->addRow(object_ptr<Ui::LinkButton>(
-				box,
-				u"Обновить сейчас"_q))->setClickedCallback([=] {
-				box->closeBox();
-				InstallUpdate(updateUrl);
-			});
-		} else {
-			box->addRow(object_ptr<Ui::FlatLabel>(
-				box,
-				u"Версия "_q + QString::number(kBuild)
-					+ u". Обновления копятся и сами не ставятся: когда появятся, на кнопке «Плюм» будет точка, "
-					u"а здесь — список изменений и кнопка «Обновить сейчас»."_q,
-				st::boxDividerLabel));
-			box->addRow(object_ptr<Ui::LinkButton>(
-				box,
-				u"Проверить обновления"_q))->setClickedCallback([] {
-				CheckUpdates(true);
-			});
+		Ui::AddSkip(connection);
+		hint(connection, u"Через подписку идёт только Плюм, другие программы не затрагиваются. Ссылка — в кабинете "
+			u"StealthSurf или в Happ. Подключится по «Готово»."_q);
+		Ui::AddSkip(connection);
+		title(connection, u"Аккаунты"_q);
+		for (const auto &account : Core::App().domain().orderedAccounts()) {
+			if (!account->sessionExists()) {
+				continue;
+			}
+			const auto hide = toggle(
+				connection,
+				u"Скрыть: "_q + AccountTitle(account),
+				st::menuIconProfile,
+				rpl::single(AccountHidden(account)));
+			hide->toggledChanges() | rpl::on_next([=](bool on) {
+				SetAccountHidden(account, on);
+			}, hide->lifetime());
 		}
-		box->addButton(rpl::single(u"Сохранить"_q), [=] {
-			const auto link = url->getLastText().trimmed();
-			const auto on = enabled->toggled() && !link.isEmpty();
-			const auto changed = (link != VpnUrl());
-			SetState(u"vpnUrl"_q, link);
+		Ui::AddSkip(connection);
+		hint(connection, u"До 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». Скрытые не видны в списке и молчат; "
+			u"открыть — «Скрытые аккаунты» под списком. Все аккаунты — plume.amdiveev.ru/accounts."_q);
+
+		tabs->sectionActivated() | rpl::on_next([=](int index) {
+			for (auto i = 0; i != int(pages.size()); ++i) {
+				pages[i]->toggle(i == index, anim::type::instant);
+			}
+		}, tabs->lifetime());
+
+		box->addButton(rpl::single(u"Готово"_q), [=] {
+			const auto subscription = url->getLastText().trimmed();
+			const auto on = enabled->toggled() && !subscription.isEmpty();
+			const auto changed = (subscription != VpnUrl());
+			if (!changed && on == VpnEnabled()) {
+				box->closeBox();
+				return;
+			}
+			SetState(u"vpnUrl"_q, subscription);
 			SetState(u"vpnEnabled"_q, on);
 			if (!on) {
 				StopXray();
@@ -3505,6 +3623,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				box->closeBox();
 				return;
 			}
+			tabs->setActiveSection(3);
 			status->setText(u"Подключаю…"_q);
 			const auto start = [=] {
 				if (StartXray()) {
@@ -3527,7 +3646,6 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				start();
 			}
 		});
-		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
 	}));
 }
 

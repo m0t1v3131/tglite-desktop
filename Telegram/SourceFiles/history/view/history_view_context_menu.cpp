@@ -117,6 +117,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_chat_helpers.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
+#include "tglite/tglite_ai.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
@@ -1346,10 +1347,40 @@ bool AddSelectMessageAction(
 	return true;
 }
 
+// Plume: «Спросить помощника» и «В Маяк» — и в темах форумов, ответах, комментариях, закреплённых.
+void AddPlumeMessageActions(
+		not_null<Ui::PopupMenu*> menu,
+		const ContextMenuRequest &request,
+		not_null<ListWidget*> list) {
+	const auto item = request.item;
+	if (!item
+		|| !item->isRegular()
+		|| item->isService()
+		|| item->history()->peer->isSelf()
+		|| (request.overSelection && !request.selectedItems.empty())) {
+		return;
+	}
+	const auto controller = list->controller();
+	const auto peer = item->history()->peer;
+	const auto msgId = item->id;
+	const auto text = item->originalText().text;
+	menu->addAction(u"Спросить помощника"_q, [=] {
+		TgLite::ShowAssistantForChat(controller, peer, msgId, text);
+	}, &st::menuIconBot);
+	const auto owner = &item->history()->owner();
+	const auto itemId = item->fullId();
+	menu->addAction(u"В Маяк"_q, [=] {
+		if (const auto item = owner->message(itemId)) {
+			TgLite::ShowSendToMayak(controller, item);
+		}
+	}, &st::menuIconSend);
+}
+
 void AddSelectionAction(
 		not_null<Ui::PopupMenu*> menu,
 		const ContextMenuRequest &request,
 		not_null<ListWidget*> list) {
+	AddPlumeMessageActions(menu, request, list);
 	if (!AddClearSelectionAction(menu, request, list)) {
 		AddSelectMessageAction(menu, request, list);
 	}
