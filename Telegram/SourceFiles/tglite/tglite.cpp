@@ -19,6 +19,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "api/api_user_privacy.h"
 #include "apiwrap.h"
 #include "calls/calls_instance.h"
+#include "chat_helpers/compose/compose_show.h"
 #include "boxes/peer_list_controllers.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -54,6 +55,8 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "ui/widgets/labels.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/widgets/scroll_area.h"
+#include "ui/widgets/shadow.h"
 #include "ui/widgets/buttons.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/slide_wrap.h"
@@ -73,6 +76,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "styles/style_settings.h"
 #include "styles/style_basic.h"
 #include "styles/style_dialogs.h"
+#include "styles/style_info.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_widgets.h"
 
@@ -98,6 +102,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include <QtGui/QClipboard>
 #include <QtGui/QGuiApplication>
 #include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QNetworkProxy>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
 
@@ -183,6 +188,7 @@ bool IsSyncedKey(const QString &key) {
 		u"noisyDigest"_q,
 		u"quietChats"_q,
 		u"snoozedChats"_q,
+		u"waitingDismissed"_q,
 	};
 	return keys.contains(key);
 }
@@ -576,6 +582,136 @@ QString PendingNotesText() {
 	return result;
 }
 
+// Обновление весит ~250 МБ: оно пишется сразу в файл, при обрыве докачивается
+// с места обрыва и через раз идёт мимо VPN Плюма — сервер обновлений в России.
+constexpr auto kUpdateAttempts = 6;
+constexpr auto kUpdateRetryDelay = 3000;
+constexpr auto kUpdateMinSize = qint64(1024 * 1024);
+
+struct UpdateDownload {
+	QString url;
+	QFile file;
+	QPointer<QNetworkReply> reply;
+	qint64 total = 0;
+	int attempts = 0;
+	bool canceled = false;
+	bool writeFailed = false;
+	Fn<void(qint64 received, qint64 total)> progress;
+	Fn<void(QString error)> done;
+};
+
+QString UpdatePath() {
+#ifdef Q_OS_WIN
+	return QCoreApplication::applicationFilePath() + u".new"_q;
+#else // Q_OS_WIN
+	return QDir::tempPath() + u"/tglite-update.zip"_q;
+#endif // Q_OS_WIN
+}
+
+QNetworkAccessManager *UpdateNet() {
+	static const auto result = new QNetworkAccessManager(
+		QCoreApplication::instance());
+	return result;
+}
+
+void FinishUpdateDownload(
+		const std::shared_ptr<UpdateDownload> &download,
+		QString error) {
+	const auto size = download->file.size();
+	download->file.close();
+	if (error.isEmpty()) {
+		if (size < kUpdateMinSize
+			|| (download->total > 0 && size != download->total)) {
+			error = u"файл скачался не целиком"_q;
+		}
+	}
+	if (!error.isEmpty()) {
+		download->file.remove();
+	}
+	download->done(error);
+}
+
+void RequestUpdateChunk(const std::shared_ptr<UpdateDownload> &download) {
+	const auto offset = download->file.size();
+	auto request = QNetworkRequest(QUrl(download->url));
+	request.setAttribute(
+		QNetworkRequest::RedirectPolicyAttribute,
+		QNetworkRequest::NoLessSafeRedirectPolicy);
+	request.setTransferTimeout(60000);
+	if (offset > 0) {
+		request.setRawHeader(
+			"Range",
+			"bytes=" + QByteArray::number(offset) + '-');
+	}
+	// Чётные попытки идут напрямую, нечётные — через прокси Плюма, если прямой путь не работает.
+	UpdateNet()->setProxy((download->attempts % 2)
+		? QNetworkProxy::applicationProxy()
+		: QNetworkProxy(QNetworkProxy::NoProxy));
+	const auto reply = UpdateNet()->get(request);
+	download->reply = reply;
+	const auto received = std::make_shared<bool>(false);
+	const auto write = [=] {
+		const auto data = reply->readAll();
+		if (data.isEmpty() || download->writeFailed) {
+			return;
+		}
+		*received = true;
+		if (download->file.write(data) != data.size()) {
+			download->writeFailed = true;
+			reply->abort();
+			return;
+		}
+		if (download->progress) {
+			download->progress(download->file.size(), download->total);
+		}
+	};
+	QObject::connect(reply, &QNetworkReply::metaDataChanged, [=] {
+		const auto status = reply->attribute(
+			QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		if (status != 200 && status != 206) {
+			return;
+		}
+		if (status == 200 && download->file.size() > 0) {
+			// Сервер прислал файл целиком, а не продолжение — пишем заново
+			download->file.resize(0);
+			download->file.seek(0);
+		}
+		const auto length = reply->header(
+			QNetworkRequest::ContentLengthHeader).toLongLong();
+		if (length > 0) {
+			download->total = download->file.size() + length;
+		}
+	});
+	QObject::connect(reply, &QNetworkReply::readyRead, write);
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		if (download->canceled) {
+			return;
+		}
+		write();
+		if (download->writeFailed) {
+			FinishUpdateDownload(download, u"не хватает места на диске"_q);
+			return;
+		} else if (reply->error() == QNetworkReply::NoError
+			|| (download->total > 0
+				&& download->file.size() == download->total)) {
+			FinishUpdateDownload(download, QString());
+			return;
+		}
+		// Попытка, которая что-то скачала, не тратит запас повторов
+		download->attempts = *received ? 1 : (download->attempts + 1);
+		if (download->attempts >= kUpdateAttempts) {
+			FinishUpdateDownload(download, reply->errorString());
+			return;
+		}
+		base::call_delayed(kUpdateRetryDelay, QCoreApplication::instance(), [=] {
+			if (!download->canceled) {
+				RequestUpdateChunk(download);
+			}
+		});
+	});
+}
+
 void InstallUpdate(const QString &url) {
 	static bool updating = false;
 	if (updating) {
@@ -585,14 +721,14 @@ void InstallUpdate(const QString &url) {
 	if (!main) {
 		return;
 	}
+	const auto download = std::make_shared<UpdateDownload>();
+	download->url = url;
+	download->file.setFileName(UpdatePath());
+	if (!download->file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		main->showToast(u"Не удалось скачать обновление: нет доступа к папке Плюма"_q);
+		return;
+	}
 	updating = true;
-	auto request = QNetworkRequest(QUrl(url));
-	request.setAttribute(
-		QNetworkRequest::RedirectPolicyAttribute,
-		QNetworkRequest::NoLessSafeRedirectPolicy);
-	request.setTransferTimeout(60000);
-	const auto reply = Net()->get(request);
-	const auto canceled = std::make_shared<bool>(false);
 	// Окно скачивания — обычное окно Plume (раньше был серый системный QProgressDialog).
 	const auto progressBox = main->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(rpl::single(u"Обновление Плюма"_q));
@@ -631,43 +767,45 @@ void InstallUpdate(const QString &url) {
 		box->addButton(rpl::single(u"Отмена"_q), [=] {
 			// abort() сразу вызывает finished, а тот закрывает и удаляет это окно —
 			// поэтому сначала закрыть окно, потом прервать (раньше Плюм падал).
-			const auto r = reply;
-			*canceled = true;
+			const auto r = download->reply;
+			download->canceled = true;
+			download->progress = nullptr;
+			updating = false;
 			box->closeBox();
-			r->abort();
+			if (r) {
+				r->abort();
+			}
+			download->file.close();
+			download->file.remove();
 		});
-		QObject::connect(reply, &QNetworkReply::downloadProgress, label,
-			[=](qint64 received, qint64 total) {
-				const auto mb = [](qint64 bytes) {
-					return QString::number(bytes / 1048576., 'f', 0);
-				};
-				if (total > 0) {
-					*share = std::clamp(float64(received) / total, 0., 1.);
-					label->setText(u"Скачано %1 из %2 МБ · %3%"_q
-						.arg(mb(received), mb(total))
-						.arg(int(*share * 100)));
-				} else {
-					label->setText(u"Скачано %1 МБ"_q.arg(mb(received)));
-				}
-				bar->update();
-			});
+		const auto weak = QPointer<Ui::FlatLabel>(label);
+		download->progress = [=](qint64 received, qint64 total) {
+			if (!weak) {
+				return;
+			}
+			const auto mb = [](qint64 bytes) {
+				return QString::number(bytes / 1048576., 'f', 0);
+			};
+			if (total > 0) {
+				*share = std::clamp(float64(received) / total, 0., 1.);
+				label->setText(u"Скачано %1 из %2 МБ · %3%"_q
+					.arg(mb(received), mb(total))
+					.arg(int(*share * 100)));
+			} else {
+				label->setText(u"Скачано %1 МБ"_q.arg(mb(received)));
+			}
+			bar->update();
+		};
 	}), Ui::LayerOption::CloseOther);
-	QObject::connect(reply, &QNetworkReply::finished, [=] {
+	download->done = [=](QString error) {
 		updating = false;
-		if (*canceled) {
-			reply->deleteLater();
-			return;
-		} else if (const auto strong = progressBox.get()) {
+		download->progress = nullptr;
+		if (const auto strong = progressBox.get()) {
 			strong->closeBox();
 		}
-		reply->deleteLater();
-		if (*canceled) {
-			return;
-		}
-		const auto data = reply->readAll();
-		if (reply->error() != QNetworkReply::NoError || data.size() < 1024 * 1024) {
+		if (!error.isEmpty()) {
 			if (const auto window = Core::App().activePrimaryWindow()) {
-				window->showToast(u"Не удалось скачать обновление"_q);
+				window->showToast(u"Не удалось скачать обновление: "_q + error);
 			}
 			return;
 		}
@@ -688,17 +826,7 @@ void InstallUpdate(const QString &url) {
 #ifdef Q_OS_WIN
 			// Новый Telegram.exe кладём рядом, а заменяет его скрипт после выхода программы.
 			const auto exe = QCoreApplication::applicationFilePath();
-			const auto fresh = exe + u".new"_q;
-			QFile f(fresh);
-			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-				fail();
-				return;
-			}
-			if (f.write(data) != data.size()) {
-				fail();
-				return;
-			}
-			f.close();
+			const auto fresh = UpdatePath();
 			const auto script = QDir::tempPath() + u"/tglite-update.cmd"_q;
 			QFile s(script);
 			if (!s.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -742,17 +870,7 @@ void InstallUpdate(const QString &url) {
 			// скачанное карантином (LSFileQuarantineEnabled), а ditto с таким
 			// архивом не может распаковать прямо в «Программы» — поэтому
 			// карантин снимается заранее, а распаковка идёт не туда.
-			const auto zip = QDir::tempPath() + u"/tglite-update.zip"_q;
-			QFile f(zip);
-			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-				fail();
-				return;
-			}
-			if (f.write(data) != data.size()) {
-				fail();
-				return;
-			}
-			f.close();
+			const auto zip = UpdatePath();
 			auto app = QDir(dir);
 			app.cdUp();
 			app.cdUp();
@@ -787,7 +905,8 @@ void InstallUpdate(const QString &url) {
 			.confirmText = u"Установить и перезапустить"_q,
 			.cancelText = u"Позже"_q,
 		}));
-	});
+	};
+	RequestUpdateChunk(download);
 }
 
 // Шторка остаётся поверх чата, пока владелец не выберет действие.
@@ -1199,6 +1318,75 @@ void SetSnooze(not_null<History*> history, qint64 until) {
 	ReplaceSnoozed(&history->session(), std::move(chats));
 }
 
+// «Не требует ответа» — как LiteWaiting.java на Android. tglite.json → waitingDismissed: [{id, mid}],
+// id как на телефоне; чат убран из «Ждут меня», пока не придёт сообщение новее mid.
+constexpr auto kDismissedLimit = size_t(200);
+
+base::flat_map<uint64, qint64> DismissedFromJson(const QJsonArray &list) {
+	auto result = base::flat_map<uint64, qint64>();
+	for (const auto &value : list) {
+		const auto item = value.toObject();
+		if (const auto id = item.value(u"id"_q).toString().toLongLong()) {
+			result.emplace(QuietPeerId(id).value, qint64(item.value(u"mid"_q).toDouble()));
+		}
+	}
+	return result;
+}
+
+QJsonArray DismissedToJson(const base::flat_map<uint64, qint64> &chats) {
+	auto result = QJsonArray();
+	for (const auto &[id, mid] : chats) {
+		result.push_back(QJsonObject{
+			{ u"id"_q, QuietDialogId(PeerId(id)) },
+			{ u"mid"_q, double(mid) },
+		});
+	}
+	return result;
+}
+
+base::flat_map<uint64, qint64> &Dismissed() {
+	static auto result = DismissedFromJson(ReadState().value(u"waitingDismissed"_q).toArray());
+	return result;
+}
+
+void ReplaceDismissed(base::flat_map<uint64, qint64> chats) {
+	auto &dismissed = Dismissed();
+	if (ranges::equal(chats, dismissed)) {
+		return;
+	}
+	dismissed = std::move(chats);
+	while (dismissed.size() > kDismissedLimit) {
+		dismissed.erase(dismissed.begin());
+	}
+	SetState(u"waitingDismissed"_q, DismissedToJson(dismissed));
+}
+
+bool WaitingDismissed(not_null<const History*> history) {
+	const auto &dismissed = Dismissed();
+	const auto i = dismissed.find(history->peer->id.value);
+	return (i != dismissed.end()) && (LastServerId(history) <= i->second);
+}
+
+// Написавшие снова уже вернулись — их записи больше ничего не значат
+base::flat_map<uint64, qint64> ActualDismissed(not_null<Main::Session*> session) {
+	auto result = Dismissed();
+	for (auto i = result.begin(); i != result.end();) {
+		const auto history = session->data().historyLoaded(PeerId(i->first));
+		if (history && LastServerId(history) > i->second) {
+			i = result.erase(i);
+		} else {
+			++i;
+		}
+	}
+	return result;
+}
+
+void DismissWaiting(not_null<History*> history) {
+	auto chats = ActualDismissed(&history->session());
+	chats[history->peer->id.value] = LastServerId(history);
+	ReplaceDismissed(std::move(chats));
+}
+
 // Ответили после срока — убрать напоминание
 void ClearAnsweredSnoozed(not_null<Main::Session*> session) {
 	auto chats = Snoozed();
@@ -1369,7 +1557,7 @@ void SetQuietGroups(bool enabled) {
 
 // «Сводка»: шумные чаты не видны в списке, их новое пересказывает бот Плюм (сервер, 9:00 и 19:00).
 constexpr auto kPlumeBotId = uint64(8629329150); // @plume_organizer_bot — присылает сводки
-constexpr auto kWaitingSeconds = 48 * 3600; // последнее слово за собеседником — ждёт вас 2 дня
+constexpr auto kWaitingSeconds = 30 * 24 * 3600; // последнее слово за собеседником — ждёт вас 30 дней
 
 bool &NoisyDigestFlag() {
 	static auto result = ReadState().value(u"noisyDigest"_q).toBool(true);
@@ -1689,6 +1877,7 @@ QJsonObject SyncedSettings() {
 		{ u"noisyDigest"_q, NoisyDigestFlag() },
 		{ u"quietChats"_q, QuietToJson(Quiet()) },
 		{ u"snoozedChats"_q, SnoozeToJson(Snoozed()) },
+		{ u"waitingDismissed"_q, DismissedToJson(Dismissed()) },
 	};
 }
 
@@ -1747,6 +1936,9 @@ bool ApplySyncedSettings(const QJsonObject &settings, qint64 updated) {
 	}
 	if (settings.contains(u"snoozedChats"_q)) {
 		ReplaceSnoozed(session, SnoozeFromJson(settings.value(u"snoozedChats"_q).toArray()));
+	}
+	if (settings.contains(u"waitingDismissed"_q)) {
+		ReplaceDismissed(DismissedFromJson(settings.value(u"waitingDismissed"_q).toArray()));
 	}
 	if (settings.contains(u"focusChats"_q)) {
 		auto chats = base::flat_set<uint64>();
@@ -2052,7 +2244,10 @@ QFont StatFont(int size) {
 // Ждёт вас: личный чат с непрочитанным или где последнее слово за собеседником (до 2 дней),
 // в группе или канале — упоминание вам; плюс отмеченные «непрочитанными» и сводки бота Плюм.
 bool Waiting(not_null<History*> history, TimeId now) {
-	if (FocusHidden(history) || TaktBotHidden(history) || SnoozeHidden(history)) {
+	if (FocusHidden(history)
+		|| TaktBotHidden(history)
+		|| SnoozeHidden(history)
+		|| WaitingDismissed(history)) {
 		return false;
 	} else if (SnoozeDue(history)) {
 		return true; // Плюм: срок отсрочки — «Пора ответить», даже если прочитано
@@ -2090,16 +2285,14 @@ QString WaitingWhen(TimeId date) {
 		: when.toString(u"dd.MM"_q);
 }
 
-} // namespace
-
-void ShowWaitingBox(not_null<Window::SessionController*> controller) {
-	const auto session = &controller->session();
+// Ждут вашего ответа, «Пора ответить» и новые — сверху
+std::vector<not_null<History*>> WaitingChats(not_null<Main::Session*> session) {
 	const auto now = base::unixtime::now();
-	auto list = std::vector<not_null<History*>>();
+	auto result = std::vector<not_null<History*>>();
 	const auto visit = [&](not_null<PeerData*> peer) {
 		if (const auto history = session->data().historyLoaded(peer)) {
 			if (Waiting(history, now)) {
-				list.push_back(history);
+				result.push_back(history);
 			}
 		}
 	};
@@ -2112,51 +2305,13 @@ void ShowWaitingBox(not_null<Window::SessionController*> controller) {
 	session->data().enumerateBroadcasts([&](not_null<ChannelData*> channel) {
 		visit(channel);
 	});
-	ranges::sort(list, ranges::greater(), [](not_null<History*> history) {
+	ranges::sort(result, ranges::greater(), [](not_null<History*> history) {
 		return std::make_pair(SnoozeDue(history), history->chatListTimeId());
 	});
-
-	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Ждут меня · "_q + QString::number(list.size())));
-		box->setWidth(st::boxWideWidth);
-		AddHint(box, u"Кто ждёт вашего ответа: личные с новым или где последнее слово за собеседником "
-			u"(за 2 дня), упоминания вам в группах, отмеченные непрочитанными, сводки бота Плюм. "
-			u"Из основного списка и архива. Ответили — человек уходит отсюда."_q);
-		if (list.empty()) {
-			AddHint(box, u"Сейчас никто не ждёт — можно выдохнуть."_q);
-		}
-		for (const auto &history : list) {
-			const auto last = history->chatListMessage();
-			const auto unread = history->unreadCount();
-			const auto mention = history->unreadMentions().has();
-			auto text = history->peer->name();
-			if (SnoozeDue(history)) {
-				text = u"⏰ "_q + text + u" · пора ответить"_q;
-			}
-			if (mention) {
-				text += u" · @ упоминание"_q;
-			} else if (unread > 0) {
-				text += u" · "_q + QString::number(unread);
-			}
-			if (last) {
-				text += u" · "_q + WaitingWhen(last->date());
-			}
-			const auto button = AddLink(box, text);
-			const auto preview = last
-				? last->notificationText().text.simplified()
-				: QString();
-			if (!preview.isEmpty()) {
-				AddHint(box, preview.size() > 140 ? preview.left(139) + u"…"_q : preview);
-			}
-			const auto peer = history->peer;
-			button->setClickedCallback([=] {
-				box->closeBox();
-				controller->showPeerHistory(peer);
-			});
-		}
-		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
-	}));
+	return result;
 }
+
+} // namespace
 
 bool IsQuiet(not_null<PeerData*> peer) {
 	return Quiet().contains(peer->id.value);
@@ -2206,12 +2361,21 @@ rpl::producer<int> QuietUnreadValue(not_null<Main::Session*> session) {
 
 namespace {
 
-// Строка «Своих» как в списке чатов: последнее сообщение, справа время и счётчик
+enum class PlumeListKind {
+	Quiet,
+	Waiting,
+};
+
+constexpr auto kWaitingRefreshSeconds = 60; // «вчера» и окно в 30 дней меняются со временем
+
+// Строка как в списке чатов: последнее сообщение, справа время и счётчик.
+// В «Ждут меня» при наведении справа — «Убрать».
 class QuietRow final : public PeerListRow {
 public:
-	explicit QuietRow(not_null<History*> history)
+	QuietRow(not_null<History*> history, bool canDismiss)
 	: PeerListRow(history->peer)
-	, _history(history) {
+	, _history(history)
+	, _canDismiss(canDismiss) {
 		refreshPreview();
 	}
 
@@ -2225,10 +2389,18 @@ public:
 				text = last->from()->shortName() + u": "_q + text;
 			}
 		}
-		setCustomStatus(text.isEmpty() ? u"Нет сообщений"_q : text);
+		if (text.isEmpty()) {
+			text = u"Нет сообщений"_q;
+		}
+		if (_canDismiss && SnoozeDue(_history)) {
+			text = u"⏰ Пора ответить · "_q + text;
+		}
+		setCustomStatus(text);
 		_when = last ? WaitingWhen(last->date()) : QString();
 		const auto unread = _history->unreadCount();
-		_unread = (unread > 0)
+		_unread = (_canDismiss && _history->unreadMentions().has())
+			? u"@"_q
+			: (unread > 0)
 			? QString::number(unread)
 			: _history->unreadMark()
 			? u" "_q
@@ -2240,13 +2412,16 @@ public:
 	}
 
 	QSize rightActionSize() const override {
-		return QSize(st::dialogsUnreadHeight * 3, st::dialogsUnreadHeight * 2);
+		const auto width = _canDismiss
+			? std::max(st::dialogsUnreadHeight * 3, st::linkFont->width(DismissText()))
+			: st::dialogsUnreadHeight * 3;
+		return QSize(width, st::dialogsUnreadHeight * 2);
 	}
 	QMargins rightActionMargins() const override {
 		return QMargins(0, st::peerListBoxItem.namePosition.y(), st::boxRowPadding.right(), 0);
 	}
 	bool rightActionDisabled() const override {
-		return true;
+		return !_canDismiss;
 	}
 	void rightActionPaint(
 			Painter &p,
@@ -2257,6 +2432,15 @@ public:
 			bool actionSelected) override {
 		const auto size = rightActionSize();
 		const auto right = outerWidth - x - size.width();
+		if (_canDismiss && selected) {
+			p.setFont(actionSelected ? st::linkFont->underline() : st::linkFont);
+			p.setPen(st::windowActiveTextFg);
+			p.drawText(
+				QRect(x, y, size.width(), size.height()),
+				DismissText(),
+				style::al_right);
+			return;
+		}
 		p.setFont(st::dialogsDateFont);
 		p.setPen(st::dialogsDateFg);
 		p.drawTextRight(right, y, outerWidth, _when);
@@ -2279,7 +2463,12 @@ public:
 	}
 
 private:
+	[[nodiscard]] static QString DismissText() {
+		return u"Убрать"_q;
+	}
+
 	const not_null<History*> _history;
+	const bool _canDismiss = false;
 	QString _when;
 	QString _unread;
 
@@ -2291,23 +2480,41 @@ public:
 	: _window(window) {
 	}
 
+	void setKind(PlumeListKind kind) {
+		if (_kind != kind) {
+			_kind = kind;
+			rebuild();
+		}
+	}
+
+	[[nodiscard]] PlumeListKind kind() const {
+		return _kind;
+	}
+
+	void refresh() {
+		rebuild();
+	}
+
 	Main::Session &session() const override {
 		return _window->session();
 	}
 
 	void prepare() override {
-		delegate()->peerListSetTitle(rpl::single(u"Свои"_q));
-		setDescriptionText(u"Пока пусто. Добавить — правый клик по чату → «В свои»."_q);
 		const auto session = &_window->session();
 		rpl::single(rpl::empty) | rpl::then(rpl::merge(
 			QuietStream().events(),
 			session->data().newItemAdded() | rpl::to_empty,
 			session->data().pinnedDialogsOrderUpdated(),
 			session->changes().historyUpdates(
-				Data::HistoryUpdate::Flag::UnreadView) | rpl::to_empty
+				Data::HistoryUpdate::Flag::UnreadView) | rpl::to_empty,
+			base::timer_each(kWaitingRefreshSeconds * crl::time(1000))
 		)) | rpl::on_next([=] {
 			rebuild();
 		}, lifetime());
+	}
+
+	void rowRightActionClicked(not_null<PeerListRow*> row) override {
+		dismiss(static_cast<QuietRow*>(row.get())->history());
 	}
 
 	void rowClicked(not_null<PeerListRow*> row) override {
@@ -2322,6 +2529,13 @@ public:
 		auto result = base::make_unique_q<Ui::PopupMenu>(
 			parent,
 			st::popupMenuWithIcons);
+		if (_kind == PlumeListKind::Waiting) {
+			const auto history = static_cast<QuietRow*>(row.get())->history();
+			result->addAction(u"Не требует ответа"_q, [=] {
+				dismiss(history);
+			}, &st::menuIconMarkRead);
+			result->addSeparator();
+		}
 		// То же меню, что в общем списке: закрепить, без звука, архив, «Убрать из своих»
 		Window::FillDialogsEntryMenu(
 			_window,
@@ -2334,10 +2548,19 @@ public:
 	}
 
 private:
+	void dismiss(not_null<History*> history) {
+		DismissWaiting(history);
+		rebuild();
+		_window->showToast(u"Убрано — вернётся со следующим сообщением"_q);
+	}
+
 	void rebuild() {
-		const auto list = QuietChats(&_window->session());
+		const auto isWaiting = (_kind == PlumeListKind::Waiting);
+		const auto list = isWaiting
+			? WaitingChats(&_window->session())
+			: QuietChats(&_window->session());
 		const auto count = delegate()->peerListFullRowsCount();
-		auto same = (count == int(list.size()));
+		auto same = (_builtKind == _kind) && (count == int(list.size()));
 		for (auto i = 0; same && i != count; ++i) {
 			same = (delegate()->peerListRowAt(i)->peer() == list[i]->peer);
 		}
@@ -2355,23 +2578,177 @@ private:
 					delegate()->peerListFullRowsCount() - 1));
 		}
 		for (const auto &history : list) {
-			delegate()->peerListAppendRow(std::make_unique<QuietRow>(history));
+			delegate()->peerListAppendRow(std::make_unique<QuietRow>(history, isWaiting));
 		}
+		_builtKind = _kind;
 		delegate()->peerListRefreshRows();
 	}
 
 	const not_null<Window::SessionController*> _window;
+	PlumeListKind _kind = PlumeListKind::Quiet;
+	PlumeListKind _builtKind = PlumeListKind::Quiet;
 
 };
 
 } // namespace
 
-void ShowQuietBox(not_null<Window::SessionController*> controller) {
-	controller->show(Box<PeerListBox>(
-		std::make_unique<QuietListController>(controller),
-		[](not_null<PeerListBox*> box) {
-			box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
-		}));
+namespace {
+
+constexpr auto kQuietListOpened = "plumeQuietOpened";
+constexpr auto kQuietListAllowed = "plumeQuietAllowed";
+
+struct QuietListRequest {
+	not_null<Window::SessionController*> controller;
+	PlumeListKind kind = PlumeListKind::Quiet;
+	bool toggle = false;
+};
+
+rpl::event_stream<QuietListRequest> &QuietListRequests() {
+	static auto result = rpl::event_stream<QuietListRequest>();
+	return result;
+}
+
+void UpdateQuietListVisibility(not_null<Ui::RpWidget*> list) {
+	const auto isShown = list->property(kQuietListOpened).toBool()
+		&& list->property(kQuietListAllowed).toBool();
+	list->setVisible(isShown);
+	if (isShown) {
+		list->raise();
+	}
+}
+
+void SetQuietListOpened(not_null<Ui::RpWidget*> list, bool opened) {
+	list->setProperty(kQuietListOpened, opened);
+	UpdateQuietListVisibility(list);
+}
+
+} // namespace
+
+void ShowQuietList(not_null<Window::SessionController*> controller, bool toggle) {
+	QuietListRequests().fire({ .controller = controller, .toggle = toggle });
+}
+
+void ShowWaitingList(not_null<Window::SessionController*> controller, bool toggle) {
+	QuietListRequests().fire({
+		.controller = controller,
+		.kind = PlumeListKind::Waiting,
+		.toggle = toggle,
+	});
+}
+
+Ui::RpWidget *CreateQuietList(
+		not_null<QWidget*> parent,
+		not_null<Window::SessionController*> controller) {
+	const auto result = new Ui::RpWidget(parent);
+	result->setProperty(kQuietListAllowed, true);
+	result->hide();
+	result->paintRequest() | rpl::on_next([=](const QRect &clip) {
+		auto p = QPainter(result);
+		p.fillRect(clip, st::dialogsBg);
+	}, result->lifetime());
+
+	const auto back = Ui::CreateChild<Ui::IconButton>(result, st::infoTopBarBack);
+	back->setAccessibleName(u"Назад к чатам"_q);
+	back->setClickedCallback([=] {
+		SetQuietListOpened(result, false);
+	});
+	const auto title = Ui::CreateChild<Ui::FlatLabel>(result, u"Свои"_q, st::boxTitle);
+	const auto restore = Ui::CreateChild<Ui::LinkButton>(result, QString());
+	restore->hide();
+	const auto line = Ui::CreateChild<Ui::PlainShadow>(result);
+	const auto scroll = Ui::CreateChild<Ui::ScrollArea>(result, st::defaultSolidScroll);
+	const auto inner = scroll->setOwnedWidget(object_ptr<Ui::VerticalLayout>(scroll));
+
+	auto &lifetime = result->lifetime();
+	const auto delegate = lifetime.make_state<PeerListContentDelegateShow>(
+		controller->uiShow());
+	const auto listController = lifetime.make_state<QuietListController>(controller);
+	const auto content = inner->add(object_ptr<PeerListContent>(inner, listController));
+	delegate->setContent(content);
+	listController->setDelegate(delegate);
+	const auto empty = inner->add(object_ptr<Ui::SlideWrap<Ui::FlatLabel>>(
+		inner,
+		object_ptr<Ui::FlatLabel>(inner, QString(), st::boxDividerLabel),
+		st::boxRowPadding));
+	const auto hint = inner->add(object_ptr<Ui::SlideWrap<Ui::FlatLabel>>(
+		inner,
+		object_ptr<Ui::FlatLabel>(
+			inner,
+			u"Наведите на чат → «Убрать», если ответ не нужен: "
+			u"чат вернётся со следующим сообщением."_q,
+			st::boxDividerLabel),
+		st::boxRowPadding));
+	const auto layoutHeader = [=](int width) {
+		const auto right = st::boxRowPadding.right();
+		restore->moveToRight(right, (back->height() - restore->height()) / 2, width);
+		const auto available = width
+			- back->width()
+			- (restore->isHidden() ? right : (restore->width() + 2 * right));
+		title->resizeToNaturalWidth(std::max(available, 0));
+		title->moveToLeft(back->width(), (back->height() - title->height()) / 2);
+	};
+	const auto refreshHeader = [=] {
+		const auto isWaiting = (listController->kind() == PlumeListKind::Waiting);
+		const auto count = delegate->peerListFullRowsCount();
+		title->setText(isWaiting
+			? u"Ждут меня · "_q + QString::number(count)
+			: u"Свои"_q);
+		empty->entity()->setText(isWaiting
+			? u"Сейчас никто не ждёт ответа — можно выдохнуть."_q
+			: u"Пока пусто. Добавить — правый клик по чату → «В свои»."_q);
+		empty->toggle(!count, anim::type::instant);
+		hint->toggle(isWaiting && count > 0, anim::type::instant);
+		const auto dismissed = isWaiting
+			? int(ActualDismissed(&controller->session()).size())
+			: 0;
+		restore->setText(u"Вернуть убранных · "_q + QString::number(dismissed));
+		restore->setVisible(dismissed > 0);
+		layoutHeader(result->width());
+	};
+	content->heightValue() | rpl::on_next(refreshHeader, lifetime);
+	restore->setClickedCallback([=] {
+		ReplaceDismissed({});
+		listController->refresh();
+	});
+
+	rpl::merge(
+		scroll->scrolls(),
+		scroll->heightValue() | rpl::to_empty
+	) | rpl::on_next([=] {
+		const auto top = scroll->scrollTop();
+		inner->setVisibleTopBottom(top, top + scroll->height());
+	}, lifetime);
+	result->sizeValue() | rpl::on_next([=](QSize size) {
+		back->moveToLeft(0, 0);
+		layoutHeader(size.width());
+		line->setGeometry(0, back->height(), size.width(), st::lineWidth);
+		scroll->setGeometry(
+			0,
+			back->height() + st::lineWidth,
+			size.width(),
+			std::max(size.height() - back->height() - st::lineWidth, 0));
+		inner->resizeToWidth(size.width());
+	}, lifetime);
+
+	QuietListRequests().events(
+	) | rpl::filter([=](const QuietListRequest &request) {
+		return request.controller == controller;
+	}) | rpl::on_next([=](const QuietListRequest &request) {
+		const auto isOpened = result->property(kQuietListOpened).toBool();
+		const auto isSame = (listController->kind() == request.kind);
+		SetQuietListOpened(result, !(request.toggle && isOpened && isSame));
+		if (!isOpened || !isSame) {
+			listController->setKind(request.kind);
+			refreshHeader();
+			scroll->scrollToY(0);
+		}
+	}, lifetime);
+	return result;
+}
+
+void SetQuietListAllowed(not_null<Ui::RpWidget*> list, bool allowed) {
+	list->setProperty(kQuietListAllowed, allowed);
+	UpdateQuietListVisibility(list);
 }
 
 bool SnoozeHidden(not_null<const History*> history) {
@@ -3240,8 +3617,8 @@ void ShowPlumeBox(not_null<Window::SessionController*> controller) {
 			});
 		};
 		section(u"Под рукой"_q);
-		add(u"Свои"_q, [=] { ShowQuietBox(controller); });
-		add(u"Ждут меня"_q, [=] { ShowWaitingBox(controller); });
+		add(u"Свои"_q, [=] { ShowQuietList(controller); });
+		add(u"Ждут меня"_q, [=] { ShowWaitingList(controller); });
 		add(u"Отложено"_q, [=] { ShowSnoozedBox(controller); });
 		add(u"Сводка сейчас"_q, [=] { RequestDigest(controller); });
 		section(u"Помощь и порядок"_q);
@@ -3426,7 +3803,7 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		const auto chats = page();
 		Ui::AddSkip(chats);
 		link(chats, u"Ждут меня"_q, st::menuIconChatBubble)->setClickedCallback(
-			closeAnd([=] { ShowWaitingBox(controller); }));
+			closeAnd([=] { ShowWaitingList(controller); }));
 		link(chats, u"Разбор чатов"_q, st::menuIconArchive)->setClickedCallback(
 			closeAnd([=] { ShowTriageBox(controller); }));
 		link(chats, u"Сводка и чистка"_q, st::menuIconClear)->setClickedCallback([=] {

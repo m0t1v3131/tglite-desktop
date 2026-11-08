@@ -97,6 +97,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 #include "styles/style_media_player.h"
 #include "styles/style_menu_icons.h"
+#include "tglite/tglite_ai.h"
 
 #include <QtWidgets/QApplication>
 #include <QtCore/QMimeData>
@@ -107,6 +108,8 @@ namespace {
 
 constexpr auto kFreezeTimeout = 2 * crl::time(1000);
 constexpr auto kHashtagResultsLimit = 5;
+constexpr auto kShtabMinQuery = 2;
+constexpr auto kShtabRequestDelay = crl::time(400);
 constexpr auto kStartReorderThreshold = 30;
 constexpr auto kStartDragToFilterThresholdX = kStartReorderThreshold;
 constexpr auto kStartDragToFilterThresholdY = 75;
@@ -279,6 +282,8 @@ struct InnerWidget::PeerSearchResult {
 	mutable Ui::Text::String name;
 	mutable Ui::PeerBadge badge;
 	BasicRow row;
+	bool fromShtab = false;
+	QString shtabWhy;
 };
 
 struct InnerWidget::TagCache {
@@ -1498,7 +1503,13 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 			p.fillRect(0, 0, fullWidth, st::searchedBarHeight, st::searchedBarBg);
 			p.setFont(st::searchedBarFont);
 			p.setPen(st::searchedBarFg);
-			p.drawTextLeft(st::searchedBarPosition.x(), st::searchedBarPosition.y(), width(), tr::lng_search_global_results(tr::now));
+			const auto fromShtab = _peerSearchResults.front()->fromShtab;
+			const auto onlyShtab = _peerSearchResults.back()->fromShtab;
+			p.drawTextLeft(st::searchedBarPosition.x(), st::searchedBarPosition.y(), width(), onlyShtab
+				? u"Из Штаба"_q
+				: fromShtab
+				? u"Из Штаба и общего поиска"_q
+				: tr::lng_search_global_results(tr::now));
 			p.translate(0, st::searchedBarHeight);
 
 			auto skip = peerSearchOffset();
@@ -1966,7 +1977,13 @@ void InnerWidget::paintPeerSearchResult(
 	QRect tr(context.st->textLeft, context.st->textTop, namewidth, st::dialogsTextFont->height);
 	p.setFont(st::dialogsTextFont);
 	QString username = peer->username();
-	if (!context.active && username.startsWith(_peerSearchQuery, Qt::CaseInsensitive)) {
+	if (result->fromShtab) {
+		const auto why = result->shtabWhy.isEmpty()
+			? (username.isEmpty() ? u"есть в базе"_q : ('@' + username))
+			: result->shtabWhy;
+		p.setPen(context.active ? st::dialogsTextFgActive : st::dialogsTextFgService);
+		p.drawText(tr.left(), tr.top() + st::dialogsTextFont->ascent, st::dialogsTextFont->elided(u"Штаб · "_q + why, tr.width()));
+	} else if (!context.active && username.startsWith(_peerSearchQuery, Qt::CaseInsensitive)) {
 		auto first = '@' + username.mid(0, _peerSearchQuery.size());
 		auto second = username.mid(_peerSearchQuery.size());
 		auto w = st::dialogsTextFont->width(first);
@@ -4289,6 +4306,7 @@ void InnerWidget::applySearchState(SearchState state) {
 	newFilter = words.isEmpty() ? QString() : words.join(' ');
 	if (newFilter != _filter || otherChanged) {
 		_filter = newFilter;
+		requestShtabPeople();
 		if (_filter.isEmpty()
 			&& !_searchState.fromPeer
 			&& _searchState.tags.empty()
@@ -4851,7 +4869,70 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
 		_peerSearchResults.push_back(
 			std::make_unique<PeerSearchResult>(peer));
 	}
+	mergeShtabPeople();
 	refresh();
+}
+
+void InnerWidget::requestShtabPeople() {
+	const auto query = (_searchState.tab == ChatSearchTab::MyMessages
+		&& !_searchState.fromPeer
+		&& _searchHashOrCashtag == HashOrCashtag::None
+		&& _filter.size() >= kShtabMinQuery)
+		? _filter
+		: QString();
+	if (query == _shtabQuery) {
+		return;
+	}
+	_shtabQuery = query;
+	_shtabTimer.cancel();
+	if (!_shtabPeople.empty()) {
+		_shtabPeople.clear();
+		mergeShtabPeople();
+	}
+	if (query.isEmpty()) {
+		return;
+	}
+	_shtabTimer.setCallback([=] {
+		TgLite::FindShtabPeople(&session(), query, crl::guard(this, [=](
+				std::vector<TgLite::ShtabPerson> people) {
+			if (query != _shtabQuery || _state != WidgetState::Filtered) {
+				return;
+			}
+			_shtabPeople = std::move(people);
+			mergeShtabPeople();
+			refresh();
+		}));
+	});
+	_shtabTimer.callOnce(kShtabRequestDelay);
+}
+
+// Люди Штаба — первыми в «общем поиске», с причиной совпадения вместо @ника.
+// Совпавших только по имени и уже открытых в списке чатов не повторяем.
+void InnerWidget::mergeShtabPeople() {
+	const auto shown = [&](not_null<PeerData*> peer) {
+		const auto history = peer->owner().historyLoaded(peer);
+		return history && history->inChatList();
+	};
+	auto shtab = std::vector<std::unique_ptr<PeerSearchResult>>();
+	for (const auto &person : _shtabPeople) {
+		if (!person.why.isEmpty() || !shown(person.peer)) {
+			shtab.push_back(std::make_unique<PeerSearchResult>(person.peer));
+			shtab.back()->fromShtab = true;
+			shtab.back()->shtabWhy = person.why;
+		}
+	}
+	const auto taken = [&](not_null<PeerData*> peer) {
+		return ranges::any_of(shtab, [&](const auto &row) {
+			return row->peer == peer;
+		});
+	};
+	for (auto &row : _peerSearchResults) {
+		if (!row->fromShtab && (row->sponsored || !taken(row->peer))) {
+			shtab.push_back(std::move(row));
+		}
+	}
+	_peerSearchResults = std::move(shtab);
+	_peerSearchSelected = _peerSearchPressed = -1;
 }
 
 Data::Folder *InnerWidget::shownFolder() const {

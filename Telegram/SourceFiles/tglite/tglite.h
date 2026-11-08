@@ -10,6 +10,11 @@ Licensed under GNU GPL v. 3.
 
 class History;
 class PeerData;
+class QWidget;
+
+namespace Ui {
+class RpWidget;
+} // namespace Ui
 
 namespace Main {
 class Account;
@@ -23,7 +28,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26110320;
+inline constexpr auto kBuild = 26110813;
 
 void Start();
 void Stop();
@@ -61,8 +66,9 @@ void SetNoisyDigest(not_null<Main::Session*> session, bool enabled);
 // «Сводка сейчас»: сервер соберёт её (до пары минут) и пришлёт ботом Плюм; открывает чат с ботом.
 void RequestDigest(not_null<Window::SessionController*> controller);
 void OpenDigestChat(not_null<Window::SessionController*> controller);
-// «Ждут меня»: окно со списком тех, кто ждёт вашего ответа (из основного списка и архива).
-void ShowWaitingBox(not_null<Window::SessionController*> controller);
+// «Ждут меня»: кто ждёт вашего ответа (из основного списка и архива) — на месте списка чатов,
+// в той же панели, что «Свои». toggle: повторное нажатие кнопки закрывает список.
+void ShowWaitingList(not_null<Window::SessionController*> controller, bool toggle = false);
 // Сводка: непрочитанные, кто шумит, что спрятано, и выход из заброшенных каналов и групп.
 void ShowSummaryBox(not_null<Window::SessionController*> controller);
 // «Разбор чатов»: люди из основного списка по одному — в архив, в контакты или оставить; сразу всех — в архив.
@@ -96,7 +102,14 @@ void SetGhost(not_null<Window::SessionController*> controller, bool enabled);
 void SetQuiet(not_null<Main::Session*> session, not_null<PeerData*> peer, bool quiet);
 [[nodiscard]] std::vector<not_null<History*>> QuietChats(not_null<Main::Session*> session);
 [[nodiscard]] rpl::producer<int> QuietUnreadValue(not_null<Main::Session*> session);
-void ShowQuietBox(not_null<Window::SessionController*> controller);
+// Список «Своих» открывается на месте списка чатов, «←» возвращает обычный список.
+// toggle: повторное нажатие кнопки «Свои» закрывает уже открытый список.
+void ShowQuietList(not_null<Window::SessionController*> controller, bool toggle = false);
+[[nodiscard]] Ui::RpWidget *CreateQuietList(
+	not_null<QWidget*> parent,
+	not_null<Window::SessionController*> controller);
+// Скрывает список «Своих» на время поиска, открытой папки или узкой колонки, не закрывая его.
+void SetQuietListAllowed(not_null<Ui::RpWidget*> list, bool allowed);
 
 // «Отложить ответ»: до срока чат не в списке (если не было нового), в срок — первым в «Ждут меня»
 // с пометкой «Пора ответить». tglite.json → snoozedChats, общий с телефоном. Список — «Плюм» → «Отложено».

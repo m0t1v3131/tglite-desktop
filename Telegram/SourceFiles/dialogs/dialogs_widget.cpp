@@ -694,6 +694,11 @@ Widget::Widget(
 		_mayak = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreateMayakButton(_searchControls, controller));
 		_mayak->show();
+		_shtab = object_ptr<Ui::AbstractButton>::fromRaw(
+			TgLite::CreateShtabButton(_searchControls, controller));
+		_shtab->show();
+		_plumeQuiet = object_ptr<Ui::RpWidget>::fromRaw(
+			TgLite::CreateQuietList(this, controller));
 	}
 	const auto lockUnlock = _lockUnlock->entity();
 	lockUnlock->setAccessibleName(tr::lng_shortcuts_lock(tr::now));
@@ -4573,7 +4578,8 @@ void Widget::updateControlsGeometry() {
 		+ st::dialogsFilterPadding.x();
 	const auto plumeWidth = (_plume ? _plume->width() : 0)
 		+ (_plumeRefresh ? _plumeRefresh->width() : 0)
-		+ (_mayak ? _mayak->width() : 0);
+		+ (_mayak ? _mayak->width() : 0)
+		+ (_shtab ? _shtab->width() : 0);
 	const auto filterWidth = std::max(ratiow, smallw)
 		- filterLeft
 		- filterRight
@@ -4643,13 +4649,24 @@ void Widget::updateControlsGeometry() {
 			st::dialogsFilterPadding.y());
 		_mayak->setVisible(narrowRatio == 0.);
 	}
+	if (_shtab) {
+		_shtab->moveToLeft(
+			filterLeft
+				+ filterWidth
+				+ st::dialogsFilterPadding.x() / 2
+				+ refreshWidth
+				+ (_mayak ? _mayak->width() : 0),
+			st::dialogsFilterPadding.y());
+		_shtab->setVisible(narrowRatio == 0.);
+	}
 	if (_plume) {
 		_plume->moveToLeft(
 			filterLeft
 				+ filterWidth
 				+ st::dialogsFilterPadding.x() / 2
 				+ refreshWidth
-				+ (_mayak ? _mayak->width() : 0),
+				+ (_mayak ? _mayak->width() : 0)
+				+ (_shtab ? _shtab->width() : 0),
 			st::dialogsFilterPadding.y());
 		_plume->setVisible(narrowRatio == 0.);
 	}
@@ -4705,6 +4722,14 @@ void Widget::updateControlsGeometry() {
 	putBottomButton(_updateTelegram);
 	putBottomButton(_downloadBar);
 	putBottomButton(_loadMoreChats);
+	if (_plumeQuiet) {
+		_plumeQuiet->setGeometry(
+			0,
+			expandedStoriesTop,
+			barw,
+			std::max(height() - bottomSkip - expandedStoriesTop, 0));
+		TgLite::SetQuietListAllowed(_plumeQuiet.data(), hasPlumeNavigation);
+	}
 	if (_connecting) {
 		_connecting->setBottomSkip(bottomSkip);
 	}

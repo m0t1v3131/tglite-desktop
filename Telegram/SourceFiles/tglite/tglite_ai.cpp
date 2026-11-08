@@ -14,6 +14,7 @@ Licensed under GNU GPL v. 3.
 
 #include "apiwrap.h"
 #include "core/application.h"
+#include "core/file_utilities.h"
 #include "window/window_controller.h"
 #include "api/api_common.h"
 #include "api/api_sending.h"
@@ -39,6 +40,7 @@ Licensed under GNU GPL v. 3.
 #include "data/data_chat.h"
 #include "data/data_chat_filters.h"
 #include "data/data_folder.h"
+#include "data/data_forum_topic.h"
 #include "data/data_changes.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
@@ -77,6 +79,7 @@ Licensed under GNU GPL v. 3.
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
+#include <QtCore/QUrlQuery>
 #include <QtCore/QJsonObject>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
@@ -575,6 +578,34 @@ void WithMayakBot(not_null<Main::Session*> session, Fn<void(UserData*)> done) {
 		session->data().processUsers(result.data().vusers());
 		session->data().processChats(result.data().vchats());
 		done(session->data().userLoaded(UserId(kMayakBotId)));
+	}).fail([=](const MTP::Error &) {
+		done(nullptr);
+	}).send();
+}
+
+// ---------- Штаб ----------
+// Штаб — мини-приложение бота @hqcomand_Bot: окно внутри Плюма, вход по Telegram, без пароля
+constexpr auto kShtabBot = "hqcomand_Bot";
+constexpr auto kShtabUrl = "https://shtab.mot1.ru/";
+
+void WithShtabBot(not_null<Main::Session*> session, Fn<void(UserData*)> done) {
+	const auto username = QString::fromLatin1(kShtabBot);
+	const auto loaded = [=] {
+		const auto peer = session->data().peerByUsername(username);
+		return peer ? peer->asUser() : nullptr;
+	};
+	if (const auto bot = loaded()) {
+		done(bot);
+		return;
+	}
+	session->api().request(MTPcontacts_ResolveUsername(
+		MTP_flags(MTPcontacts_ResolveUsername::Flag()),
+		MTP_string(username),
+		MTP_string(QString())
+	)).done([=](const MTPcontacts_ResolvedPeer &result) {
+		session->data().processUsers(result.data().vusers());
+		session->data().processChats(result.data().vchats());
+		done(loaded());
 	}).fail([=](const MTP::Error &) {
 		done(nullptr);
 	}).send();
@@ -3922,6 +3953,45 @@ protected:
 
 };
 
+class ShtabButton final : public Ui::AbstractButton {
+public:
+	explicit ShtabButton(QWidget *parent) : AbstractButton(parent) {
+		setCursor(style::cur_pointer);
+		resize(st::dialogsLock.height, st::dialogsLock.height);
+		setToolTip(u"Штаб: все люди"_q);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		const auto h = std::min(height(), style::ConvertScale(30));
+		auto soft = st::windowActiveTextFg->c;
+		soft.setAlpha(isOver() ? 56 : 28);
+		p.setPen(Qt::NoPen);
+		p.setBrush(soft);
+		p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
+		const auto u = style::ConvertScale(1.);
+		const auto left = width() / 2. - 6 * u;
+		const auto top = height() / 2. - 9 * u;
+		const auto color = st::windowActiveTextFg->c;
+		// Древко и флажок
+		p.setBrush(color);
+		p.drawRoundedRect(QRectF(left, top, 1.8 * u, 18 * u), 0.9 * u, 0.9 * u);
+		p.drawPolygon(QPolygonF(QVector<QPointF>{
+			QPointF(left + 1.8 * u, top + 1 * u),
+			QPointF(left + 13 * u, top + 1 * u),
+			QPointF(left + 10 * u, top + 5.5 * u),
+			QPointF(left + 13 * u, top + 10 * u),
+			QPointF(left + 1.8 * u, top + 10 * u) }));
+	}
+
+	void onStateChanged(State was, StateChangeSource source) override {
+		update();
+	}
+
+};
+
 void InstallHotkey() {
 	static auto installed = false;
 	if (installed) {
@@ -4001,6 +4071,42 @@ Ui::AbstractButton *CreateMayakButton(
 	return result;
 }
 
+Ui::AbstractButton *CreateShtabButton(
+		not_null<QWidget*> parent,
+		not_null<Window::SessionController*> controller) {
+	const auto result = new ShtabButton(parent);
+	result->setAccessibleName(u"Штаб: все люди"_q);
+	result->setClickedCallback([=] {
+		OpenShtab(controller);
+	});
+	return result;
+}
+
+void OpenShtab(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	const auto weak = base::make_weak(controller.get());
+	WithShtabBot(session, [=](UserData *bot) {
+		if (!weak.get()) {
+			return;
+		} else if (!bot || !bot->isBot()) {
+			File::OpenUrl(QString::fromLatin1(kShtabUrl));
+			return;
+		}
+		const auto url = (bot->botInfo && !bot->botInfo->botMenuButtonUrl.isEmpty())
+			? bot->botInfo->botMenuButtonUrl
+			: QString::fromLatin1(kShtabUrl);
+		session->attachWebView().open({
+			.bot = bot,
+			.context = {
+				.controller = weak,
+				.action = Api::SendAction(session->data().history(bot)),
+			},
+			.button = { .url = url.toUtf8() },
+			.source = InlineBots::WebViewSourceBotMenu(),
+		});
+	});
+}
+
 void OpenMayak(not_null<Window::SessionController*> controller) {
 	const auto session = &controller->session();
 	const auto weak = base::make_weak(controller.get());
@@ -4015,9 +4121,13 @@ void OpenMayak(not_null<Window::SessionController*> controller) {
 		const auto url = (bot->botInfo && !bot->botInfo->botMenuButtonUrl.isEmpty())
 			? bot->botInfo->botMenuButtonUrl
 			: u"https://mayak.amdiveev.ru"_q;
+		// Действие — чат с ботом: иначе берётся открытый чат и Telegram отвечает BOT_WEBVIEW_DISABLED.
 		session->attachWebView().open({
 			.bot = bot,
-			.context = { .controller = weak },
+			.context = {
+				.controller = weak,
+				.action = Api::SendAction(session->data().history(bot)),
+			},
 			.button = { .url = url.toUtf8() },
 			.source = InlineBots::WebViewSourceBotMenu(),
 		});
@@ -4042,7 +4152,9 @@ void ShowSendToMayak(
 		not_null<HistoryItem*> item) {
 	const auto session = &controller->session();
 	const auto weak = base::make_weak(controller.get());
-	const auto chat = item->history()->peer->name();
+	const auto topic = item->topic();
+	const auto chat = item->history()->peer->name()
+		+ (topic ? u" · "_q + topic->title() : QString());
 	const auto from = item->from()->name();
 	const auto body = item->originalText().text;
 	const auto media = item->media();
@@ -4195,7 +4307,7 @@ Ui::RpWidget *CreatePlumeNavigation(
 		return button;
 	};
 	const auto quiet = add(u"Свои"_q, st::menuIconPlumeCircle,
-		[=] { ShowQuietBox(controller); }, true);
+		[=] { ShowQuietList(controller, true); }, true);
 	QuietUnreadValue(&controller->session()) | rpl::on_next([=](int unread) {
 		quiet->setHasNew(unread > 0);
 		quiet->setToolTip(unread
@@ -4204,7 +4316,7 @@ Ui::RpWidget *CreatePlumeNavigation(
 		quiet->setAccessibleName(quiet->toolTip());
 	}, result->lifetime());
 	add(u"Ждут меня"_q, st::menuIconReply,
-		[=] { ShowWaitingBox(controller); })
+		[=] { ShowWaitingList(controller, true); })
 		->setToolTip(u"Люди, которым вы ещё не ответили"_q);
 	add(u"Сводка"_q, st::menuIconDiscussion,
 		[=] { RequestDigest(controller); })
@@ -4694,6 +4806,95 @@ void RequestDigest(not_null<Window::SessionController*> controller) {
 			strong->showToast(code
 				? (u"Сводка не запустилась: сервер ответил "_q + QString::number(code))
 				: u"Сводка не запустилась: нет связи с plume.amdiveev.ru"_q);
+		}
+	});
+}
+
+namespace {
+
+// Ники, которые Telegram уже не нашёл: не спрашиваем снова, чтобы не плодить запросы
+base::flat_set<QString> UnresolvedShtabNames;
+constexpr auto kShtabResolveLimit = 3;
+
+PeerData *LoadedShtabPeer(
+		not_null<Main::Session*> session,
+		const QJsonObject &person) {
+	if (const auto id = person.value(u"tg_id"_q).toVariant().toULongLong()) {
+		if (const auto user = session->data().userLoaded(UserId(id))) {
+			return user;
+		}
+	}
+	const auto username = person.value(u"username"_q).toString();
+	return username.isEmpty() ? nullptr : session->data().peerByUsername(username);
+}
+
+} // namespace
+
+void FindShtabPeople(
+		not_null<Main::Session*> session,
+		const QString &query,
+		Fn<void(std::vector<ShtabPerson>)> done) {
+	const auto key = AiKey();
+	if (key.isEmpty()) {
+		return;
+	}
+	auto url = QUrl(u"https://plume.amdiveev.ru/api/people"_q);
+	url.setQuery(QUrlQuery({ { u"q"_q, query } }));
+	auto request = QNetworkRequest(url);
+	request.setRawHeader("X-Lite-Key", key.toUtf8());
+	request.setTransferTimeout(15000);
+	const auto reply = Net()->get(request);
+	const auto weak = base::make_weak(session);
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		reply->deleteLater();
+		const auto list = QJsonDocument::fromJson(reply->readAll()).object()
+			.value(u"people"_q).toArray();
+		const auto strong = weak.get();
+		if (!strong || list.isEmpty()) {
+			return;
+		}
+		const auto collect = [=] {
+			auto result = std::vector<ShtabPerson>();
+			for (const auto &v : list) {
+				const auto person = v.toObject();
+				if (const auto peer = LoadedShtabPeer(strong, person)) {
+					result.push_back({ peer, person.value(u"why"_q).toString() });
+				}
+			}
+			done(std::move(result));
+		};
+		// Кого нет в памяти, ищем по нику — не больше трёх за запрос, ответ ждём один раз
+		const auto waiting = std::make_shared<int>(0);
+		for (const auto &v : list) {
+			const auto person = v.toObject();
+			const auto username = person.value(u"username"_q).toString();
+			if (*waiting >= kShtabResolveLimit) {
+				break;
+			} else if (LoadedShtabPeer(strong, person)
+				|| username.isEmpty()
+				|| UnresolvedShtabNames.contains(username.toLower())) {
+				continue;
+			}
+			++*waiting;
+			strong->api().request(MTPcontacts_ResolveUsername(
+				MTP_flags(MTPcontacts_ResolveUsername::Flag()),
+				MTP_string(username),
+				MTP_string(QString())
+			)).done([=](const MTPcontacts_ResolvedPeer &result) {
+				strong->data().processUsers(result.data().vusers());
+				strong->data().processChats(result.data().vchats());
+				if (!--*waiting) {
+					collect();
+				}
+			}).fail([=](const MTP::Error &) {
+				UnresolvedShtabNames.emplace(username.toLower());
+				if (!--*waiting) {
+					collect();
+				}
+			}).send();
+		}
+		if (!*waiting) {
+			collect();
 		}
 	});
 }

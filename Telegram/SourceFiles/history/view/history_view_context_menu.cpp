@@ -1347,7 +1347,7 @@ bool AddSelectMessageAction(
 	return true;
 }
 
-// Plume: «Спросить помощника» и «В Маяк» — и в темах форумов, ответах, комментариях, закреплённых.
+// Plume: «Спросить помощника» и «В Маяк» — и в темах форумов, ответах, комментариях, закреплённых; в «Избранном» только «В Маяк».
 void AddPlumeMessageActions(
 		not_null<Ui::PopupMenu*> menu,
 		const ContextMenuRequest &request,
@@ -1356,17 +1356,18 @@ void AddPlumeMessageActions(
 	if (!item
 		|| !item->isRegular()
 		|| item->isService()
-		|| item->history()->peer->isSelf()
 		|| (request.overSelection && !request.selectedItems.empty())) {
 		return;
 	}
 	const auto controller = list->controller();
 	const auto peer = item->history()->peer;
-	const auto msgId = item->id;
-	const auto text = item->originalText().text;
-	menu->addAction(u"Спросить помощника"_q, [=] {
-		TgLite::ShowAssistantForChat(controller, peer, msgId, text);
-	}, &st::menuIconBot);
+	if (!peer->isSelf()) {
+		const auto msgId = item->id;
+		const auto text = item->originalText().text;
+		menu->addAction(u"Спросить помощника"_q, [=] {
+			TgLite::ShowAssistantForChat(controller, peer, msgId, text);
+		}, &st::menuIconBot);
+	}
 	const auto owner = &item->history()->owner();
 	const auto itemId = item->fullId();
 	menu->addAction(u"В Маяк"_q, [=] {

@@ -64,6 +64,7 @@ void ShowAssistantForChat(
 
 // Маяк внутри Плюма: мини-приложение бота @mayak52_bot (mayak.amdiveev.ru, вход по Telegram без пароля).
 void OpenMayak(not_null<Window::SessionController*> controller);
+void OpenShtab(not_null<Window::SessionController*> controller);
 // «В Маяк» у сообщения: новый чат в Маяке с этим сообщением (и его фото/файлом) — сообщением «чат: …» своему боту.
 void ShowSendToMayak(
 	not_null<Window::SessionController*> controller,
@@ -71,6 +72,10 @@ void ShowSendToMayak(
 // Бот Маяка, если он уже загружен; иначе nullptr (и подгружает его на следующий раз).
 [[nodiscard]] UserData *MayakBot(not_null<Main::Session*> session);
 // Круглая кнопка-маяк рядом с «Помощником» над чатами.
+[[nodiscard]] Ui::AbstractButton *CreateShtabButton(
+	not_null<QWidget*> parent,
+	not_null<Window::SessionController*> controller);
+
 [[nodiscard]] Ui::AbstractButton *CreateMayakButton(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);
@@ -92,6 +97,17 @@ void StartCommandPolling();
 // Менеджер аккаунтов (plume.amdiveev.ru/accounts): какие аккаунты открыты в этом Плюме —
 // имя, @имя, телефон, «скрыт». Сессии никуда не уходят. Сам — при запуске и раз в 30 минут.
 void ReportAccounts();
+
+// Поиск людей Штаба для строки поиска: по должности, заметкам, команде, прежнему имени.
+// Отдаёт тех, кого можно открыть в Telegram, и чем совпали («Должность: …»; пусто — только имя).
+struct ShtabPerson {
+	not_null<PeerData*> peer;
+	QString why;
+};
+void FindShtabPeople(
+	not_null<Main::Session*> session,
+	const QString &query,
+	Fn<void(std::vector<ShtabPerson>)> done);
 
 // Общие настройки Плюма: забирает с сервера при запуске и раз в 3 минуты, отправляет после изменения.
 void PullSettings();

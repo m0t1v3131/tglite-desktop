@@ -325,6 +325,10 @@ Session::Session(not_null<Main::Session*> session)
 	session,
 	FilterId(),
 	maxPinnedChatsLimitValue(nullptr))
+, _plumeNoisyList(
+	session,
+	FilterId(),
+	maxPinnedChatsLimitValue(nullptr))
 , _contactsList(Dialogs::SortMode::Name)
 , _contactsNoChatsList(Dialogs::SortMode::Name)
 , _ttlCheckTimer([=] { checkTTLs(); })
@@ -560,6 +564,7 @@ void Session::clear() {
 		folder->clearChatsList();
 	}
 	_chatsList.clear();
+	_plumeNoisyList.clear();
 	_chatsFilters->clear();
 	_histories->clearAll();
 	_webpages.clear();
@@ -5654,7 +5659,9 @@ not_null<Dialogs::MainList*> Session::chatsListFor(
 	} else if (const auto sublist = entry->asSublist()) {
 		return sublist->parent()->chatsList();
 	} else if (const auto history = entry->asHistory()) {
-		if (const auto info = history->communityListInfo()
+		if (history->plumeNoisy()) {
+			return &_plumeNoisyList;
+		} else if (const auto info = history->communityListInfo()
 			; info
 			&& info->collapsedInChatLists()
 			&& info->channel() != history->peer) {
@@ -5662,6 +5669,10 @@ not_null<Dialogs::MainList*> Session::chatsListFor(
 		}
 	}
 	return chatsList(entry->folder());
+}
+
+not_null<Dialogs::MainList*> Session::plumeNoisyList() {
+	return &_plumeNoisyList;
 }
 
 not_null<Dialogs::MainList*> Session::chatsList(Data::Folder *folder) {
@@ -5689,6 +5700,9 @@ void Session::refreshChatListEntry(Dialogs::Key key) {
 	const auto entry = key.entry();
 	const auto history = entry->asHistory();
 	const auto topic = entry->asTopic();
+	if (history) {
+		history->refreshPlumeNoisy();
+	}
 	const auto mainList = chatsListFor(entry);
 	auto event = ChatListEntryRefresh{ .key = key };
 	const auto creating = event.existenceChanged = !entry->inChatList();

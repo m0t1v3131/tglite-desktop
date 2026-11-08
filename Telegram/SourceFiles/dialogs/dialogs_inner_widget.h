@@ -35,6 +35,10 @@ namespace MTP {
 class Error;
 } // namespace MTP
 
+namespace TgLite {
+struct ShtabPerson;
+} // namespace TgLite
+
 namespace Lottie {
 class Icon;
 } // namespace Lottie
@@ -585,6 +589,8 @@ private:
 	void refreshFilterResults();
 	void clearSearchResults(bool alsoPeerSearchResults = true);
 	void clearPeerSearchResults();
+	void requestShtabPeople();
+	void mergeShtabPeople();
 	void clearPreviewResults();
 	void updateSelectedRow(Key key = Key());
 	void trackResultsHistory(not_null<History*> history);
@@ -723,6 +729,9 @@ private:
 	int _peerSearchSelected = -1;
 	int _peerSearchPressed = -1;
 	int _peerSearchMenu = -1;
+	QString _shtabQuery;
+	std::vector<TgLite::ShtabPerson> _shtabPeople;
+	base::Timer _shtabTimer;
 
 	std::vector<std::unique_ptr<FakeRow>> _previewResults;
 	int _previewCount = 0;

@@ -462,6 +462,10 @@ public:
 		not_null<Data::Folder*> folder,
 		HistoryItem *folderDialogItem = nullptr);
 	void clearFolder();
+	void refreshPlumeNoisy();
+	[[nodiscard]] bool plumeNoisy() const {
+		return _plumeNoisy;
+	}
 
 	[[nodiscard]] Data::CommunityInfo *communityListInfo() const {
 		return _communityInfo;
@@ -686,6 +690,7 @@ private:
 	bool _loadedAtBottom = true;
 
 	std::optional<Data::Folder*> _folder;
+	bool _plumeNoisy = false;
 	Data::CommunityInfo *_communityInfo = nullptr;
 
 	std::optional<MsgId> _inboxReadBefore;

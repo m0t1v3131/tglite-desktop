@@ -932,6 +932,7 @@ public:
 
 	[[nodiscard]] not_null<Dialogs::MainList*> chatsListFor(
 		not_null<Dialogs::Entry*> entry);
+	[[nodiscard]] not_null<Dialogs::MainList*> plumeNoisyList();
 	[[nodiscard]] not_null<Dialogs::MainList*> chatsList(
 		Folder *folder = nullptr);
 	[[nodiscard]] not_null<const Dialogs::MainList*> chatsList(
@@ -1260,6 +1261,7 @@ private:
 	rpl::event_stream<SentFromScheduled> _sentFromScheduled;
 
 	Dialogs::MainList _chatsList;
+	Dialogs::MainList _plumeNoisyList; // Плюм: шумные чаты «Сводки», не показывается
 	Dialogs::IndexedList _contactsList;
 	Dialogs::IndexedList _contactsNoChatsList;
 	bool _dialogsUnreadOnTop = false;

@@ -2565,6 +2565,24 @@ void History::setFolderPointer(Data::Folder *folder) {
 	session().changes().historyUpdated(this, UpdateFlag::Folder);
 }
 
+// Плюм: «Сводка» — шумный чат лежит в скрытом списке вместо основного и архива,
+// поэтому в папках он виден, а во «Всех чатах» нет
+void History::refreshPlumeNoisy() {
+	const auto noisy = TgLite::NoisyHidden(this);
+	if (_plumeNoisy == noisy) {
+		return;
+	}
+	const auto wasInList = inChatList();
+	if (wasInList) {
+		removeFromChatList(0, owner().chatsListFor(this));
+	}
+	_plumeNoisy = noisy;
+	if (wasInList) {
+		addToChatList(0, owner().chatsListFor(this));
+		owner().chatsListChanged(folder());
+	}
+}
+
 void History::updateCommunityRegistration() {
 	const auto communityId = Data::PeerLinkedCommunityId(peer);
 	const auto info = communityId
@@ -2575,7 +2593,9 @@ void History::updateCommunityRegistration() {
 	}
 	const auto listFor = [&](Data::CommunityInfo *info)
 	-> Dialogs::MainList* {
-		if (info
+		if (_plumeNoisy) {
+			return owner().plumeNoisyList();
+		} else if (info
 			&& info->collapsedInChatLists()
 			&& info->channel() != peer) {
 			return info->chatsList();
@@ -3483,8 +3503,6 @@ bool History::shouldBeInChatList() const {
 		return false; // Плюм: в архиве без чужих каналов и открытых групп
 	} else if (TgLite::SnoozeHidden(this)) {
 		return false; // Плюм: «Отложить ответ» — до срока, пока нет нового
-	} else if (TgLite::NoisyHidden(this)) {
-		return false; // Плюм: «Сводка» — шумные чаты пересказывает бот Плюм
 	} else if (peer->migrateTo() || !folderKnown()) {
 		return false;
 	} else if (const auto community = peer->asChannel()
