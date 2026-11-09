@@ -1374,7 +1374,7 @@ void AddPlumeMessageActions(
 		if (const auto item = owner->message(itemId)) {
 			TgLite::ShowSendToMayak(controller, item);
 		}
-	}, &st::menuIconSend);
+	}, &st::menuIconPlumeMayak);
 }
 
 void AddSelectionAction(

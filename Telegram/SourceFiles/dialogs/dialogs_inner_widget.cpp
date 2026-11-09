@@ -4394,6 +4394,8 @@ void InnerWidget::refreshFilterResults() {
 			if (const auto add = owner->folderLoaded(id)) {
 				append(add->chatsList()->indexed());
 			}
+			// Плюм: шумные чаты «Сводки» скрыты из списка, но ищутся
+			append(owner->plumeNoisyList()->indexed());
 			append(owner->contactsNoChatsList());
 		}
 	}

@@ -3201,7 +3201,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				if (const auto item = session->data().message(mayakId)) {
 					TgLite::ShowSendToMayak(controller, item);
 				}
-			}, &st::menuIconSend);
+			}, &st::menuIconPlumeMayak);
 		}
 		if (item->canBeSelected() && !hasSelectRestriction()) {
 			const auto itemId = item->fullId();
