@@ -11,6 +11,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "tglite/tglite.h"
 
 #include "base/timer_rpl.h"
+#include "base/timer.h"
 #include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
@@ -2311,6 +2312,82 @@ std::vector<not_null<History*>> WaitingChats(not_null<Main::Session*> session) {
 	return result;
 }
 
+// «По одному»: основной список без архива, шумных, отложенных и спрятанных фокусом —
+// люди с новым или «отмеченные непрочитанными», группы с упоминанием или ответом вам.
+bool InboxCandidate(not_null<History*> history) {
+	if (history->folder()
+		|| FocusHidden(history)
+		|| TaktBotHidden(history)
+		|| MayakBotHidden(history)
+		|| SnoozeHidden(history)
+		|| NoisyHidden(history)) {
+		return false;
+	} else if (SnoozeDue(history)) {
+		return true;
+	}
+	const auto peer = history->peer;
+	if (const auto user = peer->asUser()) {
+		return !user->isSelf()
+			&& !user->isInaccessible()
+			&& !user->isServiceUser()
+			&& !user->isRepliesChat()
+			&& !user->isVerifyCodes()
+			&& !user->isBot()
+			&& (history->unreadCount() > 0 || history->unreadMark());
+	} else if (peer->isChat() || peer->isMegagroup()) {
+		return history->unreadMentions().has() || history->unreadMark();
+	}
+	return false;
+}
+
+// «Пора ответить» и новые — сверху
+std::vector<not_null<History*>> InboxChats(not_null<Main::Session*> session) {
+	auto result = std::vector<not_null<History*>>();
+	for (const auto row : *session->data().chatsList()->indexed()) {
+		if (const auto history = row->history()) {
+			if (InboxCandidate(history)) {
+				result.push_back(history);
+			}
+		}
+	}
+	ranges::sort(result, ranges::greater(), [](not_null<History*> history) {
+		return std::make_pair(SnoozeDue(history), history->chatListTimeId());
+	});
+	return result;
+}
+
+// Открыть чат справа без отметки «прочитано» (как «Прочитать незаметно»), до ухода из чата.
+void OpenStealthChat(not_null<Window::SessionController*> controller, not_null<PeerData*> peer) {
+	const auto id = peer->id.value;
+	Stealth().emplace(id);
+	controller->showPeerHistory(peer);
+	// Ушли из чата — режим заканчивается, чат остаётся непрочитанным
+	controller->activeChatChanges() | rpl::filter([=](const Dialogs::Key &key) {
+		return !key.peer() || key.peer()->id.value != id;
+	}) | rpl::take(1) | rpl::to_empty | rpl::on_next([=] {
+		Stealth().remove(id);
+	}, controller->lifetime());
+}
+
+// Прочитано на всех устройствах: сообщения, метка «непрочитан» и упоминания.
+void ReadInboxChat(not_null<History*> history) {
+	MarkStealthRead(history);
+	if (history->unreadMark()) {
+		history->owner().histories().changeDialogUnreadMark(history, false);
+	}
+	if (history->unreadMentions().has()) {
+		const auto peer = history->peer;
+		peer->session().api().request(MTPmessages_ReadMentions(
+			MTP_flags(MTPmessages_ReadMentions::Flag()),
+			peer->input(),
+			MTP_int(0)
+		)).done([=](const MTPmessages_AffectedHistory &result) {
+			peer->session().api().applyAffectedHistory(peer, result);
+			peer->owner().history(peer)->clearUnreadMentionsFor(MsgId(0));
+		}).send();
+	}
+}
+
 } // namespace
 
 bool IsQuiet(not_null<PeerData*> peer) {
@@ -2364,7 +2441,10 @@ namespace {
 enum class PlumeListKind {
 	Quiet,
 	Waiting,
+	Inbox,
 };
+
+constexpr auto kInboxSentDelay = crl::time(700); // ответ ушёл — следующий чат чуть позже, чтобы его было видно
 
 constexpr auto kWaitingRefreshSeconds = 60; // «вчера» и окно в 30 дней меняются со временем
 
@@ -2477,14 +2557,87 @@ private:
 class QuietListController final : public PeerListController {
 public:
 	explicit QuietListController(not_null<Window::SessionController*> window)
-	: _window(window) {
+	: _window(window)
+	, _sentTimer([=] { inboxNext(); }) {
 	}
 
 	void setKind(PlumeListKind kind) {
-		if (_kind != kind) {
+		if (kind == PlumeListKind::Inbox) {
+			// «По одному» продолжает с того же места, разобрано всё — собирает очередь заново
+			_kind = kind;
+			if (!inboxCurrent()) {
+				_queue.clear();
+				_seen.clear();
+				_index = 0;
+			}
+			rebuild();
+			showInboxCurrent();
+		} else if (_kind != kind) {
 			_kind = kind;
 			rebuild();
 		}
+	}
+
+	// Панель видна: только тогда ответ в текущем чате переводит к следующему.
+	void setShownCheck(Fn<bool()> shown) {
+		_shown = std::move(shown);
+	}
+
+	[[nodiscard]] History *inboxCurrent() const {
+		return (_index < int(_queue.size())) ? _queue[_index].get() : nullptr;
+	}
+
+	[[nodiscard]] int inboxIndex() const {
+		return _index;
+	}
+
+	[[nodiscard]] int inboxTotal() const {
+		return int(_queue.size());
+	}
+
+	[[nodiscard]] rpl::producer<> inboxChanges() const {
+		return _inboxChanges.events();
+	}
+
+	void inboxRead() {
+		if (const auto history = inboxCurrent()) {
+			ReadInboxChat(history);
+			inboxNext();
+		}
+	}
+
+	void inboxNext() {
+		_sentTimer.cancel();
+		if (_index < int(_queue.size())) {
+			++_index;
+		}
+		inboxMoved();
+	}
+
+	void inboxLater() {
+		_sentTimer.cancel();
+		if (_index + 1 < int(_queue.size())) {
+			const auto history = _queue[_index];
+			_queue.erase(_queue.begin() + _index);
+			_queue.push_back(history);
+		}
+		inboxMoved();
+	}
+
+	void inboxBack() {
+		_sentTimer.cancel();
+		if (_index > 0) {
+			--_index;
+		}
+		inboxMoved();
+	}
+
+	void inboxRestart() {
+		_sentTimer.cancel();
+		_queue.clear();
+		_seen.clear();
+		_index = 0;
+		inboxMoved();
 	}
 
 	[[nodiscard]] PlumeListKind kind() const {
@@ -2511,6 +2664,19 @@ public:
 		)) | rpl::on_next([=] {
 			rebuild();
 		}, lifetime());
+
+		// «По одному»: ответили в текущем чате — прочитано и следующий
+		session->data().newItemAdded(
+		) | rpl::filter([=](not_null<HistoryItem*> item) {
+			return (_kind == PlumeListKind::Inbox)
+				&& item->out()
+				&& !item->isService()
+				&& (item->history().get() == inboxCurrent())
+				&& (!_shown || _shown());
+		}) | rpl::on_next([=](not_null<HistoryItem*> item) {
+			ReadInboxChat(item->history());
+			_sentTimer.callOnce(kInboxSentDelay);
+		}, lifetime());
 	}
 
 	void rowRightActionClicked(not_null<PeerListRow*> row) override {
@@ -2518,6 +2684,18 @@ public:
 	}
 
 	void rowClicked(not_null<PeerListRow*> row) override {
+		if (_kind == PlumeListKind::Inbox) {
+			// Выбранный чат — следующим по очереди, текущий остаётся сразу за ним
+			const auto history = static_cast<QuietRow*>(row.get())->history();
+			const auto i = ranges::find(_queue, history);
+			if (i != end(_queue) && (i - begin(_queue)) > _index) {
+				_queue.erase(i);
+				_queue.insert(_queue.begin() + _index, history);
+				_sentTimer.cancel();
+				inboxMoved();
+			}
+			return;
+		}
 		const auto peer = row->peer();
 		_window->hideLayer();
 		_window->showPeerHistory(peer);
@@ -2554,11 +2732,52 @@ private:
 		_window->showToast(u"Убрано — вернётся со следующим сообщением"_q);
 	}
 
+	void inboxMoved() {
+		rebuild();
+		showInboxCurrent();
+	}
+
+	void showInboxCurrent() {
+		if (const auto history = inboxCurrent()) {
+			if (!_shown || _shown()) {
+				OpenStealthChat(_window, history->peer);
+			}
+		}
+	}
+
+	// Новые ждущие — в конец очереди; кто уже был в ней, второй раз не попадёт.
+	[[nodiscard]] std::vector<not_null<History*>> inboxRest() {
+		// Дальше по очереди — только кто ещё ждёт (прочитали на телефоне — выпадает)
+		for (auto i = _index + 1; i < int(_queue.size());) {
+			if (InboxCandidate(_queue[i])) {
+				++i;
+			} else {
+				_queue.erase(_queue.begin() + i);
+			}
+		}
+		for (const auto &history : InboxChats(&_window->session())) {
+			if (_seen.emplace(history).second) {
+				_queue.push_back(history);
+			}
+		}
+		return (_index + 1 < int(_queue.size()))
+			? std::vector<not_null<History*>>(_queue.begin() + _index + 1, _queue.end())
+			: std::vector<not_null<History*>>();
+	}
+
 	void rebuild() {
 		const auto isWaiting = (_kind == PlumeListKind::Waiting);
-		const auto list = isWaiting
+		const auto isInbox = (_kind == PlumeListKind::Inbox);
+		const auto list = isInbox
+			? inboxRest()
+			: isWaiting
 			? WaitingChats(&_window->session())
 			: QuietChats(&_window->session());
+		const auto guard = gsl::finally([&] {
+			if (isInbox) {
+				_inboxChanges.fire({});
+			}
+		});
 		const auto count = delegate()->peerListFullRowsCount();
 		auto same = (_builtKind == _kind) && (count == int(list.size()));
 		for (auto i = 0; same && i != count; ++i) {
@@ -2587,6 +2806,12 @@ private:
 	const not_null<Window::SessionController*> _window;
 	PlumeListKind _kind = PlumeListKind::Quiet;
 	PlumeListKind _builtKind = PlumeListKind::Quiet;
+	std::vector<not_null<History*>> _queue;
+	base::flat_set<not_null<History*>> _seen;
+	int _index = 0;
+	Fn<bool()> _shown;
+	base::Timer _sentTimer;
+	rpl::event_stream<> _inboxChanges;
 
 };
 
@@ -2636,6 +2861,14 @@ void ShowWaitingList(not_null<Window::SessionController*> controller, bool toggl
 	});
 }
 
+void ShowInboxList(not_null<Window::SessionController*> controller, bool toggle) {
+	QuietListRequests().fire({
+		.controller = controller,
+		.kind = PlumeListKind::Inbox,
+		.toggle = toggle,
+	});
+}
+
 Ui::RpWidget *CreateQuietList(
 		not_null<QWidget*> parent,
 		not_null<Window::SessionController*> controller) {
@@ -2663,6 +2896,75 @@ Ui::RpWidget *CreateQuietList(
 	const auto delegate = lifetime.make_state<PeerListContentDelegateShow>(
 		controller->uiShow());
 	const auto listController = lifetime.make_state<QuietListController>(controller);
+	listController->setShownCheck([=] { return result->isVisible(); });
+
+	// «Ждут меня» → разобрать тех же по одному
+	const auto inboxLink = inner->add(object_ptr<Ui::SlideWrap<Ui::LinkButton>>(
+		inner,
+		object_ptr<Ui::LinkButton>(inner, u"Разобрать по одному ›"_q),
+		st::boxRowPadding + QMargins(0, st::boxRowPadding.left() / 2, 0, st::boxRowPadding.left() / 2)));
+	inboxLink->hide(anim::type::instant);
+	inboxLink->entity()->setClickedCallback([=] {
+		ShowInboxList(controller);
+	});
+
+	// «По одному»: текущий чат открыт справа, здесь — кто это и что с ним сделать
+	const auto card = inner->add(object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+		inner,
+		object_ptr<Ui::VerticalLayout>(inner)));
+	card->hide(anim::type::instant);
+	const auto cardBody = card->entity();
+	const auto cardName = cardBody->add(
+		object_ptr<Ui::FlatLabel>(cardBody, QString(), st::defaultSubsectionTitle),
+		st::defaultSubsectionTitlePadding);
+	const auto cardInfo = cardBody->add(
+		object_ptr<Ui::FlatLabel>(cardBody, QString(), st::boxDividerLabel),
+		st::boxRowPadding);
+	const auto cardButtons = cardBody->add(
+		object_ptr<Ui::RpWidget>(cardBody),
+		st::boxRowPadding + QMargins(0, st::boxRowPadding.left() / 2, 0, 0));
+	const auto cardButton = [=](const QString &text, bool primary) {
+		const auto button = Ui::CreateChild<Ui::RoundButton>(
+			cardButtons,
+			rpl::single(text),
+			primary ? st::defaultActiveButton : st::defaultLightButton);
+		button->setTextTransform(Ui::RoundButtonTextTransform::NoTransform);
+		return button;
+	};
+	const auto readButton = cardButton(u"✓ Прочитано"_q, true);
+	const auto laterButton = cardButton(u"Позже"_q, false);
+	const auto prevButton = cardButton(u"← Назад"_q, false);
+	const auto againButton = cardButton(u"Собрать заново"_q, true);
+	readButton->setClickedCallback([=] { listController->inboxRead(); });
+	laterButton->setClickedCallback([=] { listController->inboxLater(); });
+	prevButton->setClickedCallback([=] { listController->inboxBack(); });
+	againButton->setClickedCallback([=] { listController->inboxRestart(); });
+	const auto layoutButtons = [=](int width) {
+		const auto gap = st::boxRowPadding.left() / 2;
+		auto x = 0;
+		auto y = 0;
+		auto rowHeight = 0;
+		for (const auto button : { readButton, laterButton, prevButton, againButton }) {
+			if (button->isHidden()) {
+				continue;
+			} else if (x > 0 && x + button->width() > width) {
+				x = 0;
+				y += rowHeight + gap;
+				rowHeight = 0;
+			}
+			button->moveToLeft(x, y, width);
+			x += button->width() + gap;
+			rowHeight = std::max(rowHeight, button->height());
+		}
+		cardButtons->resize(width, y + rowHeight);
+	};
+	cardButtons->widthValue() | rpl::on_next(layoutButtons, cardButtons->lifetime());
+	const auto cardHint = cardBody->add(
+		object_ptr<Ui::FlatLabel>(cardBody, QString(), st::boxDividerLabel),
+		st::boxRowPadding + QMargins(0, st::boxRowPadding.left() / 2, 0, 0));
+	const auto cardNext = cardBody->add(
+		object_ptr<Ui::FlatLabel>(cardBody, QString(), st::defaultSubsectionTitle),
+		st::defaultSubsectionTitlePadding);
 	const auto content = inner->add(object_ptr<PeerListContent>(inner, listController));
 	delegate->setContent(content);
 	listController->setDelegate(delegate);
@@ -2687,17 +2989,76 @@ Ui::RpWidget *CreateQuietList(
 		title->resizeToNaturalWidth(std::max(available, 0));
 		title->moveToLeft(back->width(), (back->height() - title->height()) / 2);
 	};
+	const auto refreshCard = [=] {
+		const auto isInbox = (listController->kind() == PlumeListKind::Inbox);
+		const auto history = listController->inboxCurrent();
+		const auto total = listController->inboxTotal();
+		const auto rest = delegate->peerListFullRowsCount();
+		card->toggle(isInbox && total > 0, anim::type::instant);
+		if (!isInbox || !total) {
+			return;
+		} else if (history) {
+			const auto peer = history->peer;
+			cardName->setText(peer->name());
+			auto parts = QStringList();
+			if (!peer->username().isEmpty()) {
+				parts.push_back('@' + peer->username());
+			}
+			parts.push_back(peer->isUser() ? u"личный"_q : u"группа"_q);
+			const auto unread = history->unreadCount();
+			if (SnoozeDue(history)) {
+				parts.push_back(u"⏰ пора ответить"_q);
+			} else if (!peer->isUser() && history->unreadMentions().has()) {
+				parts.push_back(u"вас упомянули"_q);
+			} else if (unread > 0) {
+				parts.push_back(u"новых: "_q + QString::number(unread));
+			} else if (history->unreadMark()) {
+				parts.push_back(u"отмечен непрочитанным"_q);
+			}
+			cardInfo->setText(parts.join(u" · "_q));
+			cardHint->setText(u"Чат открыт справа, отметка «прочитано» не уходит. "
+				u"Ответьте там — чат станет прочитанным и откроется следующий. "
+				u"«Позже» — в конец очереди."_q);
+		} else {
+			cardName->setText(u"Готово"_q);
+			cardInfo->setText(u"Разобрано чатов: "_q + QString::number(total) + u"."_q);
+			cardHint->setText(u"Кто напишет ещё — «Собрать заново»."_q);
+		}
+		readButton->setVisible(history != nullptr);
+		laterButton->setVisible(history != nullptr);
+		prevButton->setVisible(listController->inboxIndex() > 0);
+		againButton->setVisible(history == nullptr);
+		layoutButtons(cardButtons->width());
+		cardNext->setText(rest
+			? (u"Дальше · "_q + QString::number(rest))
+			: history
+			? u"Это последний"_q
+			: QString());
+	};
 	const auto refreshHeader = [=] {
-		const auto isWaiting = (listController->kind() == PlumeListKind::Waiting);
+		const auto kind = listController->kind();
+		const auto isWaiting = (kind == PlumeListKind::Waiting);
+		const auto isInbox = (kind == PlumeListKind::Inbox);
 		const auto count = delegate->peerListFullRowsCount();
-		title->setText(isWaiting
+		const auto total = listController->inboxTotal();
+		const auto current = listController->inboxCurrent();
+		title->setText(isInbox
+			? (current
+				? (u"По одному · "_q
+					+ QString::number(listController->inboxIndex() + 1)
+					+ u" из "_q
+					+ QString::number(total))
+				: u"По одному"_q)
+			: isWaiting
 			? u"Ждут меня · "_q + QString::number(count)
 			: u"Свои"_q);
-		empty->entity()->setText(isWaiting
+		empty->entity()->setText(isWaiting || isInbox
 			? u"Сейчас никто не ждёт ответа — можно выдохнуть."_q
 			: u"Пока пусто. Добавить — правый клик по чату → «В свои»."_q);
-		empty->toggle(!count, anim::type::instant);
+		empty->toggle(isInbox ? !total : !count, anim::type::instant);
 		hint->toggle(isWaiting && count > 0, anim::type::instant);
+		inboxLink->toggle(isWaiting && count > 0, anim::type::instant);
+		refreshCard();
 		const auto dismissed = isWaiting
 			? int(ActualDismissed(&controller->session()).size())
 			: 0;
@@ -2706,6 +3067,7 @@ Ui::RpWidget *CreateQuietList(
 		layoutHeader(result->width());
 	};
 	content->heightValue() | rpl::on_next(refreshHeader, lifetime);
+	listController->inboxChanges() | rpl::on_next(refreshHeader, lifetime);
 	restore->setClickedCallback([=] {
 		ReplaceDismissed({});
 		listController->refresh();
@@ -2775,17 +3137,9 @@ bool StealthReading(not_null<const History*> history) {
 }
 
 void OpenStealth(not_null<Window::SessionController*> controller, not_null<PeerData*> peer) {
-	const auto id = peer->id.value;
-	Stealth().emplace(id);
-	controller->showPeerHistory(peer);
+	OpenStealthChat(controller, peer);
 	controller->showToast(u"Читаете незаметно — отметки «прочитано» нет. "
 		u"Ответ или реакция её поставят. Отметить сразу — ⋮ → «Отметить прочитанным»"_q);
-	// Ушли из чата — режим заканчивается, чат остаётся непрочитанным
-	controller->activeChatChanges() | rpl::filter([=](const Dialogs::Key &key) {
-		return !key.peer() || key.peer()->id.value != id;
-	}) | rpl::take(1) | rpl::to_empty | rpl::on_next([=] {
-		Stealth().remove(id);
-	}, controller->lifetime());
 }
 
 void MarkStealthRead(not_null<History*> history) {
@@ -3619,6 +3973,7 @@ void ShowPlumeBox(not_null<Window::SessionController*> controller) {
 		section(u"Под рукой"_q);
 		add(u"Свои"_q, [=] { ShowQuietList(controller); });
 		add(u"Ждут меня"_q, [=] { ShowWaitingList(controller); });
+		add(u"По одному"_q, [=] { ShowInboxList(controller); });
 		add(u"Отложено"_q, [=] { ShowSnoozedBox(controller); });
 		add(u"Сводка сейчас"_q, [=] { RequestDigest(controller); });
 		section(u"Помощь и порядок"_q);
@@ -3804,6 +4159,8 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 		Ui::AddSkip(chats);
 		link(chats, u"Ждут меня"_q, st::menuIconChatBubble)->setClickedCallback(
 			closeAnd([=] { ShowWaitingList(controller); }));
+		link(chats, u"По одному"_q, st::menuIconReply)->setClickedCallback(
+			closeAnd([=] { ShowInboxList(controller); }));
 		link(chats, u"Разбор чатов"_q, st::menuIconArchive)->setClickedCallback(
 			closeAnd([=] { ShowTriageBox(controller); }));
 		link(chats, u"Сводка и чистка"_q, st::menuIconClear)->setClickedCallback([=] {

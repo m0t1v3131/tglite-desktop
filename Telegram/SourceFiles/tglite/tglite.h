@@ -28,7 +28,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26110913;
+inline constexpr auto kBuild = 26111301;
 
 void Start();
 void Stop();
@@ -69,6 +69,9 @@ void OpenDigestChat(not_null<Window::SessionController*> controller);
 // «Ждут меня»: кто ждёт вашего ответа (из основного списка и архива) — на месте списка чатов,
 // в той же панели, что «Свои». toggle: повторное нажатие кнопки закрывает список.
 void ShowWaitingList(not_null<Window::SessionController*> controller, bool toggle = false);
+// «По одному»: ждущие ответа из основного списка — по одному чату, он открыт справа незаметно.
+// В той же панели: «✓ Прочитано», «Позже», «← Назад»; ответ в чате = прочитано и следующий.
+void ShowInboxList(not_null<Window::SessionController*> controller, bool toggle = false);
 // Сводка: непрочитанные, кто шумит, что спрятано, и выход из заброшенных каналов и групп.
 void ShowSummaryBox(not_null<Window::SessionController*> controller);
 // «Разбор чатов»: люди из основного списка по одному — в архив, в контакты или оставить; сразу всех — в архив.
