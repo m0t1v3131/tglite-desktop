@@ -708,6 +708,7 @@ not_null<HistoryItem*> History::insertItem(
 
 	const auto result = i->get();
 	owner().registerMessage(result);
+	TgLite::NoteOwnMessage(result); // Плюм: где вы пишете, тот чат не шумный
 
 	Ensures(ok);
 	return result;

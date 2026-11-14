@@ -15,6 +15,7 @@ VPN: подписка StealthSurf (User-Agent Happ → готовые JSON-на�
 #include "tglite/tglite_ai.h"
 
 #include "base/call_delayed.h"
+#include <deque>
 #include "base/unixtime.h"
 #include "api/api_updates.h"
 #include "api/api_user_privacy.h"
@@ -1569,17 +1570,182 @@ bool NoisyDigest() {
 	return NoisyDigestFlag();
 }
 
-// Шумный чат: чужой канал или группа без звука, где вы не создатель и не админ. Закреплённые — не шумные.
+// Чаты, где вы сами писали за 14 дней, не шумные (14.11.2026, владелец: «не прятать чаты, где я пишу»).
+// Время своего последнего сообщения по чату — в tglite.json (mineChats), только на этом устройстве.
+constexpr auto kMineSeconds = TimeId(14 * 24 * 3600);
+constexpr auto kMineCheckDelay = crl::time(1500); // пауза между запросами «писал ли я тут»
+
+base::flat_map<uint64, TimeId> &MineChats() {
+	static auto result = [] {
+		auto map = base::flat_map<uint64, TimeId>();
+		const auto saved = ReadState().value(u"mineChats"_q).toObject();
+		for (auto i = saved.begin(); i != saved.end(); ++i) {
+			map.emplace(i.key().toULongLong(), TimeId(i.value().toDouble()));
+		}
+		return map;
+	}();
+	return result;
+}
+
+bool WroteRecently(not_null<PeerData*> peer) {
+	const auto &mine = MineChats();
+	const auto i = mine.find(peer->id.value);
+	return (i != mine.end()) && (i->second > base::unixtime::now() - kMineSeconds);
+}
+
+void SaveMineChatsLater() {
+	static auto scheduled = false;
+	if (std::exchange(scheduled, true)) {
+		return;
+	}
+	base::call_delayed(5000, QCoreApplication::instance(), [] {
+		scheduled = false;
+		const auto from = base::unixtime::now() - kMineSeconds;
+		auto json = QJsonObject();
+		for (const auto &[id, date] : MineChats()) {
+			if (date > from) {
+				json.insert(QString::number(id), double(date));
+			}
+		}
+		SetState(u"mineChats"_q, json);
+	});
+}
+
+void NoteMine(not_null<History*> history, TimeId date) {
+	const auto was = WroteRecently(history->peer);
+	auto &stored = MineChats()[history->peer->id.value];
+	if (stored >= date) {
+		return;
+	}
+	stored = date;
+	SaveMineChatsLater();
+	if (!was && WroteRecently(history->peer)) {
+		crl::on_main(&history->session(), [=] {
+			history->refreshPlumeNoisy();
+		});
+	}
+}
+
+void NoteOwnMessage(not_null<HistoryItem*> item) {
+	if (!item->out()
+		|| item->isService()
+		|| item->isScheduled()
+		|| item->history()->peer->isUser()
+		|| item->date() <= base::unixtime::now() - kMineSeconds) {
+		return;
+	}
+	NoteMine(item->history(), item->date());
+}
+
+// Спрятанная группа: один раз за запуск спросить у Telegram, писали ли вы в ней за 14 дней
+// (в списке чатов видно только последнее сообщение). По одному запросу, с паузой.
+auto &CheckMineQueue() {
+	static auto result = std::deque<std::pair<base::weak_ptr<Main::Session>, PeerId>>();
+	return result;
+}
+
+bool &CheckMineRunning() {
+	static auto result = false;
+	return result;
+}
+
+void CheckMineNext() {
+	auto &queue = CheckMineQueue();
+	while (!queue.empty()) {
+		const auto [weak, peerId] = queue.front();
+		queue.pop_front();
+		const auto session = weak.get();
+		const auto history = session
+			? session->data().historyLoaded(peerId)
+			: nullptr;
+		if (!history || WroteRecently(history->peer)) {
+			continue;
+		}
+		using Flag = MTPmessages_Search::Flag;
+		session->api().request(MTPmessages_Search(
+			MTP_flags(Flag::f_from_id),
+			history->peer->input(),
+			MTP_string(QString()),
+			MTP_inputPeerSelf(),
+			MTP_inputPeerEmpty(),
+			MTPVector<MTPReaction>(),
+			MTP_int(0), // top_msg_id
+			MTP_inputMessagesFilterEmpty(),
+			MTP_int(base::unixtime::now() - kMineSeconds), // min_date
+			MTP_int(0), // max_date
+			MTP_int(0), // offset_id
+			MTP_int(0), // add_offset
+			MTP_int(1), // limit
+			MTP_int(0), // max_id
+			MTP_int(0), // min_id
+			MTP_long(0) // hash
+		)).done([=](const MTPmessages_Messages &result) {
+			const auto list = result.match([](
+					const MTPDmessages_messagesNotModified &) {
+				return QVector<MTPMessage>();
+			}, [](const auto &data) {
+				return data.vmessages().v;
+			});
+			for (const auto &message : list) {
+				const auto date = message.match([](const MTPDmessageEmpty &) {
+					return TimeId(0);
+				}, [](const auto &data) {
+					return TimeId(data.vdate().v);
+				});
+				if (date > base::unixtime::now() - kMineSeconds) {
+					NoteMine(history, date);
+				}
+			}
+			base::call_delayed(kMineCheckDelay, session, CheckMineNext);
+		}).fail([=] {
+			base::call_delayed(kMineCheckDelay * 4, session, CheckMineNext);
+		}).send();
+		return;
+	}
+	CheckMineRunning() = false;
+}
+
+void CheckMineLater(not_null<const History*> history) {
+	static auto asked = base::flat_set<uint64>();
+	if (!asked.emplace(history->peer->id.value).second) {
+		return;
+	}
+	// Очередь общая для всех аккаунтов; запрос — от аккаунта этого чата
+	CheckMineQueue().emplace_back(
+		base::make_weak(&history->session()),
+		history->peer->id);
+	if (!std::exchange(CheckMineRunning(), true)) {
+		base::call_delayed(
+			kMineCheckDelay,
+			QCoreApplication::instance(),
+			CheckMineNext);
+	}
+}
+
+// Шумный чат: чужой канал или группа без звука, где вы не создатель и не админ. Закреплённые
+// и те, где вы сами писали за 14 дней, — не шумные.
 bool NoisyHidden(not_null<const History*> history) {
 	if (IsQuiet(history->peer) || !NoisyDigestFlag() || history->isPinnedDialog(FilterId())) {
 		return false;
+	} else if (WroteRecently(history->peer)) {
+		return false;
 	} else if (const auto channel = history->peer->asChannel()) {
-		return !channel->isCommunity()
+		const auto noisy = !channel->isCommunity()
 			&& !channel->amCreator()
 			&& !channel->hasAdminRights()
 			&& (channel->isBroadcast() || history->muted());
+		if (noisy && !channel->isBroadcast()) {
+			CheckMineLater(history);
+		}
+		return noisy;
 	} else if (const auto chat = history->peer->asChat()) {
-		return !chat->amCreator() && !chat->hasAdminRights() && history->muted();
+		const auto noisy = !chat->amCreator()
+			&& !chat->hasAdminRights()
+			&& history->muted();
+		if (noisy) {
+			CheckMineLater(history);
+		}
+		return noisy;
 	}
 	return false;
 }

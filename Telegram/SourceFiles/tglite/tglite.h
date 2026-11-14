@@ -9,6 +9,7 @@ Licensed under GNU GPL v. 3.
 #include <rpl/producer.h>
 
 class History;
+class HistoryItem;
 class PeerData;
 class QWidget;
 
@@ -28,7 +29,7 @@ class SessionController;
 namespace TgLite {
 
 // Номер сборки (ггммддчч); подставляет скрипт сборки. По нему работает обновление.
-inline constexpr auto kBuild = 26111301;
+inline constexpr auto kBuild = 26111408;
 
 void Start();
 void Stop();
@@ -62,6 +63,8 @@ void SetQuietGroups(bool enabled);
 // их новое дважды в день пересказывает бот Плюм (по умолчанию да).
 [[nodiscard]] bool NoisyDigest();
 [[nodiscard]] bool NoisyHidden(not_null<const History*> history);
+// Своё сообщение в группе или канале: такой чат 14 дней не считается шумным.
+void NoteOwnMessage(not_null<HistoryItem*> item);
 void SetNoisyDigest(not_null<Main::Session*> session, bool enabled);
 // «Сводка сейчас»: сервер соберёт её (до пары минут) и пришлёт ботом Плюм; открывает чат с ботом.
 void RequestDigest(not_null<Window::SessionController*> controller);
