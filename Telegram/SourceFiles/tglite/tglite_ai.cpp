@@ -51,6 +51,7 @@ Licensed under GNU GPL v. 3.
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "storage/storage_account.h"
 #include "mainwindow.h"
 #include "settings.h"
 #include "ui/abstract_button.h"
@@ -76,6 +77,7 @@ Licensed under GNU GPL v. 3.
 #include <QtCore/QTimer>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
@@ -3992,6 +3994,48 @@ protected:
 
 };
 
+class LuchButton final : public Ui::AbstractButton {
+public:
+	explicit LuchButton(QWidget *parent) : AbstractButton(parent) {
+		setCursor(style::cur_pointer);
+		resize(st::dialogsLock.height, st::dialogsLock.height);
+		setToolTip(u"Луч: личный помощник"_q);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		PainterHighQualityEnabler hq(p);
+		const auto h = std::min(height(), style::ConvertScale(30));
+		auto soft = st::windowActiveTextFg->c;
+		soft.setAlpha(isOver() ? 56 : 28);
+		p.setPen(Qt::NoPen);
+		p.setBrush(soft);
+		p.drawEllipse(QRect((width() - h) / 2, (height() - h) / 2, h, h));
+		const auto u = style::ConvertScale(1.);
+		const auto cx = width() / 2.;
+		const auto cy = height() / 2.;
+		// Две искорки: большая и маленькая справа сверху
+		const auto star = [&](QPointF c, float64 r) {
+			const auto k = r * 0.18;
+			auto path = QPainterPath(QPointF(c.x(), c.y() - r));
+			path.quadTo(QPointF(c.x() + k, c.y() - k), QPointF(c.x() + r, c.y()));
+			path.quadTo(QPointF(c.x() + k, c.y() + k), QPointF(c.x(), c.y() + r));
+			path.quadTo(QPointF(c.x() - k, c.y() + k), QPointF(c.x() - r, c.y()));
+			path.quadTo(QPointF(c.x() - k, c.y() - k), QPointF(c.x(), c.y() - r));
+			p.drawPath(path);
+		};
+		p.setBrush(st::windowActiveTextFg->c);
+		star(QPointF(cx - 1.5 * u, cy + 1.5 * u), 7 * u);
+		star(QPointF(cx + 5.5 * u, cy - 5.5 * u), 3.5 * u);
+	}
+
+	void onStateChanged(State was, StateChangeSource source) override {
+		update();
+	}
+
+};
+
 void InstallHotkey() {
 	static auto installed = false;
 	if (installed) {
@@ -4103,6 +4147,44 @@ void OpenShtab(not_null<Window::SessionController*> controller) {
 			},
 			.button = { .url = url.toUtf8() },
 			.source = InlineBots::WebViewSourceBotMenu(),
+		});
+	});
+}
+
+Ui::AbstractButton *CreateLuchButton(
+		not_null<QWidget*> parent,
+		not_null<Window::SessionController*> controller) {
+	const auto result = new LuchButton(parent);
+	result->setAccessibleName(u"Луч: личный помощник"_q);
+	result->setClickedCallback([=] {
+		OpenLuch(controller);
+	});
+	return result;
+}
+
+// Луч открывается как мини-приложение бота Маяка: вход сам, по подписи Telegram (только владелец).
+// Куки и данные окна хранит Telegram; микрофон и выбор файлов спрашивает само окно.
+void OpenLuch(not_null<Window::SessionController*> controller) {
+	const auto session = &controller->session();
+	const auto weak = base::make_weak(controller.get());
+	WithMayakBot(session, [=](UserData *bot) {
+		const auto strong = weak.get();
+		if (!strong) {
+			return;
+		} else if (!bot || !bot->isBot()) {
+			File::OpenUrl(u"https://mayak.amdiveev.ru/luch"_q);
+			return;
+		}
+		// Свой бот — без окна «Открыть мини-приложение?».
+		session->local().markPeerTrustedOpenWebView(bot->id);
+		session->attachWebView().open({
+			.bot = bot,
+			.context = {
+				.controller = weak,
+				.action = Api::SendAction(session->data().history(bot)),
+			},
+			.button = { .text = u"Луч"_q, .url = "https://mayak.amdiveev.ru/luch?app=1" },
+			.source = InlineBots::WebViewSourceButton{ .simple = true },
 		});
 	});
 }

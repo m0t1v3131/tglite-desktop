@@ -697,6 +697,9 @@ Widget::Widget(
 		_shtab = object_ptr<Ui::AbstractButton>::fromRaw(
 			TgLite::CreateShtabButton(_searchControls, controller));
 		_shtab->show();
+		_luch = object_ptr<Ui::AbstractButton>::fromRaw(
+			TgLite::CreateLuchButton(_searchControls, controller));
+		_luch->show();
 		_plumeQuiet = object_ptr<Ui::RpWidget>::fromRaw(
 			TgLite::CreateQuietList(this, controller));
 	}
@@ -4579,7 +4582,8 @@ void Widget::updateControlsGeometry() {
 	const auto plumeWidth = (_plume ? _plume->width() : 0)
 		+ (_plumeRefresh ? _plumeRefresh->width() : 0)
 		+ (_mayak ? _mayak->width() : 0)
-		+ (_shtab ? _shtab->width() : 0);
+		+ (_shtab ? _shtab->width() : 0)
+		+ (_luch ? _luch->width() : 0);
 	const auto filterWidth = std::max(ratiow, smallw)
 		- filterLeft
 		- filterRight
@@ -4659,6 +4663,17 @@ void Widget::updateControlsGeometry() {
 			st::dialogsFilterPadding.y());
 		_shtab->setVisible(narrowRatio == 0.);
 	}
+	if (_luch) {
+		_luch->moveToLeft(
+			filterLeft
+				+ filterWidth
+				+ st::dialogsFilterPadding.x() / 2
+				+ refreshWidth
+				+ (_mayak ? _mayak->width() : 0)
+				+ (_shtab ? _shtab->width() : 0),
+			st::dialogsFilterPadding.y());
+		_luch->setVisible(narrowRatio == 0.);
+	}
 	if (_plume) {
 		_plume->moveToLeft(
 			filterLeft
@@ -4666,7 +4681,8 @@ void Widget::updateControlsGeometry() {
 				+ st::dialogsFilterPadding.x() / 2
 				+ refreshWidth
 				+ (_mayak ? _mayak->width() : 0)
-				+ (_shtab ? _shtab->width() : 0),
+				+ (_shtab ? _shtab->width() : 0)
+				+ (_luch ? _luch->width() : 0),
 			st::dialogsFilterPadding.y());
 		_plume->setVisible(narrowRatio == 0.);
 	}
