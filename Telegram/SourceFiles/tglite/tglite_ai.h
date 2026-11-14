@@ -109,6 +109,11 @@ void FindShtabPeople(
 	const QString &query,
 	Fn<void(std::vector<ShtabPerson>)> done);
 
+// Аккаунты сами подтягиваются между устройствами (plume.amdiveev.ru/api/accsync): как вход по QR-коду, без кодов.
+// StartAccountSync — отдаёт свои аккаунты и раз в минуту подтягивает новые; ShowAccountSync — вход паролем Плюма и «подтянуть всё».
+void StartAccountSync();
+void ShowAccountSync();
+
 // Общие настройки Плюма: забирает с сервера при запуске и раз в 3 минуты, отправляет после изменения.
 void PullSettings();
 void PushSettings();

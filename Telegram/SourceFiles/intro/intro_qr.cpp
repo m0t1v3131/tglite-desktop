@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "intro/intro_qr.h"
 
+#include "tglite/tglite_ai.h"
 #include "boxes/abstract_box.h"
 #include "data/components/passkeys.h"
 #include "data/data_passkey_deserialize.h"
@@ -369,6 +370,22 @@ void QrWidget::setupControls() {
 	}, _skip->lifetime());
 
 	_skip->setClickedCallback([=] { submit(); });
+
+	// Плюм: все аккаунты с другого устройства — без кода и камеры.
+	const auto pull = Ui::CreateChild<Ui::LinkButton>(
+		this,
+		u"Подтянуть аккаунты с других устройств Плюма"_q);
+	rpl::combine(
+		sizeValue(),
+		pull->widthValue()
+	) | rpl::on_next([=](QSize size, int pullWidth) {
+		pull->moveToLeft(
+			(size.width() - pullWidth) / 2,
+			(contentTop()
+				+ st::introQrSkipTop
+				+ 3 * st::normalFont->height));
+	}, pull->lifetime());
+	pull->setClickedCallback([] { TgLite::ShowAccountSync(); });
 }
 
 void QrWidget::setupPasskeyLink() {

@@ -2350,6 +2350,7 @@ void Start() {
 		}
 	}
 	StartCommandPolling();
+	StartAccountSync();
 	static auto timer = new QTimer(QCoreApplication::instance());
 	if (!timer->isActive()) {
 		QObject::connect(timer, &QTimer::timeout, [] { CheckUpdates(false); });
@@ -4497,8 +4498,11 @@ void ShowSettingsBox(not_null<Window::SessionController*> controller) {
 				SetAccountHidden(account, on);
 			}, hide->lifetime());
 		}
+		link(connection, u"Аккаунты с других устройств"_q, st::menuIconProfile)->setClickedCallback(
+			closeAnd([=] { ShowAccountSync(); }));
 		Ui::AddSkip(connection);
-		hint(connection, u"До 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». Скрытые не видны в списке и молчат; "
+		hint(connection, u"Аккаунты с других устройств: один раз войдите паролем Плюма — дальше аккаунты сами "
+			u"подтягиваются сюда с других ваших устройств (и отсюда туда). До 30 аккаунтов: ☰ → ваше имя → «Добавить аккаунт». Скрытые не видны в списке и молчат; "
 			u"открыть — «Скрытые аккаунты» под списком. Все аккаунты — plume.amdiveev.ru/accounts."_q);
 
 		tabs->sectionActivated() | rpl::on_next([=](int index) {

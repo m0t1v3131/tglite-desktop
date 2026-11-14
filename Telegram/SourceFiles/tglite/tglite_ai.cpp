@@ -12,7 +12,21 @@ Licensed under GNU GPL v. 3.
 #include "tglite/tglite_ai.h"
 #include "tglite/tglite.h"
 
+#include <QtCore/QSysInfo>
+
 #include "apiwrap.h"
+#include "config.h"
+#include "core/core_cloud_password.h"
+#include "main/main_app_config.h"
+#include "main/main_session_settings.h"
+#include "mtproto/mtp_instance.h"
+#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/sender.h"
+#include "storage/localstorage.h"
+#include "storage/storage_account.h"
+#include "storage/storage_domain.h"
+#include "ui/widgets/fields/password_input.h"
+#include "ui/wrap/padding_wrap.h"
 #include "core/application.h"
 #include "core/file_utilities.h"
 #include "window/window_controller.h"
@@ -4897,6 +4911,931 @@ void FindShtabPeople(
 			collect();
 		}
 	});
+}
+
+// ---------- Аккаунты сами подтягиваются между устройствами ----------
+// Тот же механизм, что вход по QR-коду, только без камеры и без кодов: устройство один раз входит в Плюм паролем
+// владельца (login → secret). Дальше раз в минуту оно спрашивает сервер, нет ли на других своих устройствах
+// аккаунтов, которых здесь ещё не было; если есть — берёт одноразовый токен входа (auth.exportLoginToken)
+// и передаёт его через сервер, а устройство с аккаунтом само его подтверждает (auth.acceptLoginToken).
+// Сессии и пароли Telegram на сервер не уходят.
+namespace {
+
+constexpr auto kSyncApi = "https://plume.amdiveev.ru/api/accsync/";
+constexpr auto kSyncIdle = 15 * 1000;
+constexpr auto kSyncFast = 2500;
+constexpr auto kSyncTick = 2000;
+constexpr auto kSyncCheck = 60 * 1000;
+constexpr auto kSyncTokenWait = 24 * crl::time(1000);
+constexpr auto kSyncExportsMax = 6;
+constexpr auto kSyncPasswordTries = 3;
+
+QString SyncPlatform() {
+#ifdef Q_OS_MAC
+	return u"Mac"_q;
+#else // Q_OS_MAC
+	return u"ПК"_q;
+#endif // Q_OS_MAC
+}
+
+QString SyncDevice() {
+	return SyncPlatform() + u" · "_q + QSysInfo::machineHostName();
+}
+
+QString SyncId(not_null<Main::Account*> account) {
+	return (account->mtp().isTestMode() ? u"t"_q : QString())
+		+ QString::number(account->session().userId().bare);
+}
+
+Main::Account *SyncFindAccount(const QString &id) {
+	for (const auto &[index, account] : Core::App().domain().accounts()) {
+		if (account->sessionExists() && SyncId(account.get()) == id) {
+			return account.get();
+		}
+	}
+	return nullptr;
+}
+
+QJsonArray SyncHave() {
+	auto result = QJsonArray();
+	for (const auto &[index, account] : Core::App().domain().accounts()) {
+		if (account->sessionExists()) {
+			result.push_back(SyncId(account.get()));
+		}
+	}
+	return result;
+}
+
+QString SyncRandom() {
+	auto result = QString();
+	for (auto i = 0; i != 3; ++i) {
+		result += QString::number(base::RandomValue<uint64>(), 16).rightJustified(16, QChar('0'));
+	}
+	return result;
+}
+
+QString SyncOwnDev() {
+	auto result = ReadState().value(u"syncDev"_q).toString();
+	if (result.size() < 16) {
+		result = SyncRandom();
+		SetState(u"syncDev"_q, result);
+	}
+	return result;
+}
+
+QString SyncSecret() {
+	return ReadState().value(u"syncSecret"_q).toString();
+}
+
+// Все запросы — от имени этого устройства (dev + secret). error=login — устройство больше не «своё».
+void SyncPost(const QString &method, const QJsonObject &body, Fn<void(int, QJsonObject)> done) {
+	const auto key = AiKey();
+	if (key.isEmpty()) {
+		if (done) {
+			crl::on_main(QCoreApplication::instance(), [=] { done(401, QJsonObject()); });
+		}
+		return;
+	}
+	auto full = body;
+	full.insert(u"dev"_q, SyncOwnDev());
+	if (method != u"login"_q) {
+		full.insert(u"secret"_q, SyncSecret());
+	}
+	auto request = QNetworkRequest(QUrl(QString::fromLatin1(kSyncApi) + method));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+	request.setRawHeader("X-Lite-Key", key.toUtf8());
+	request.setTransferTimeout(15000);
+	const auto reply = Net()->post(request, QJsonDocument(full).toJson(QJsonDocument::Compact));
+	QObject::connect(reply, &QNetworkReply::finished, reply, [=] {
+		const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		const auto json = QJsonDocument::fromJson(reply->readAll()).object();
+		reply->deleteLater();
+		if (method != u"login"_q && json.value(u"error"_q).toString() == u"login"_q) {
+			SetState(u"syncSecret"_q, QString());
+		}
+		if (done) {
+			done(status, json);
+		}
+	});
+}
+
+// ----- Устройство, где аккаунты уже открыты: подтверждает токены само, без окон -----
+
+struct SyncDonorState {
+	QTimer *timer = nullptr;
+	QTimer *check = nullptr;
+	bool busy = false;
+};
+
+SyncDonorState &SyncDonor() {
+	static auto result = SyncDonorState();
+	return result;
+}
+
+void SyncDonorAccept(const QString &pub, const QString &id, const QString &token) {
+	const auto report = [=](bool ok, const QString &error) {
+		SyncPost(u"result"_q, QJsonObject{
+			{ u"pub"_q, pub },
+			{ u"id"_q, id },
+			{ u"ok"_q, ok },
+			{ u"error"_q, error },
+		}, nullptr);
+	};
+	const auto account = SyncFindAccount(id);
+	const auto bytes = QByteArray::fromBase64(token.toLatin1(), QByteArray::Base64UrlEncoding);
+	if (!account || bytes.isEmpty()) {
+		report(false, u"NO_ACCOUNT"_q);
+		return;
+	}
+	account->session().api().request(MTPauth_AcceptLoginToken(
+		MTP_bytes(bytes)
+	)).done([=](const MTPAuthorization &) {
+		report(true, QString());
+	}).fail([=](const MTP::Error &error) {
+		report(false, error.type());
+	}).send();
+}
+
+void SyncDonorPoll() {
+	auto &donor = SyncDonor();
+	if (donor.busy || !donor.timer) {
+		return;
+	}
+	const auto have = SyncHave();
+	donor.timer->start(kSyncIdle);
+	if (have.isEmpty() || SyncSecret().isEmpty()) {
+		return;
+	}
+	donor.busy = true;
+	SyncPost(u"poll"_q, QJsonObject{
+		{ u"device"_q, SyncDevice() },
+		{ u"have"_q, have },
+	}, [](int status, QJsonObject json) {
+		auto &donor = SyncDonor();
+		donor.busy = false;
+		for (const auto &value : json.value(u"tokens"_q).toArray()) {
+			const auto token = value.toObject();
+			SyncDonorAccept(
+				token.value(u"pub"_q).toString(),
+				token.value(u"id"_q).toString(),
+				token.value(u"token"_q).toString());
+		}
+		donor.timer->start(json.value(u"busy"_q).toBool() ? kSyncFast : kSyncIdle);
+	});
+}
+
+// ----- Устройство, куда подтягиваем -----
+
+struct SyncPullState {
+	bool active = false;
+	bool silent = false;
+	bool all = false;
+	rpl::variable<QString> title;
+	rpl::variable<QString> text;
+	QTimer *timer = nullptr;
+	bool asking = false;
+	int errors = 0;
+	crl::time startedAt = 0;
+	QJsonArray offered;
+	base::flat_set<QString> tried;
+	QJsonArray skip;
+	QStringList added;
+	QStringList failed;
+	crl::time nextAt = 0;
+	QPointer<Ui::GenericBox> box;
+
+	// Аккаунт, который переносим сейчас.
+	QString id;
+	QString name;
+	base::weak_ptr<Main::Account> account;
+	MTP::Sender *api = nullptr;
+	rpl::lifetime lifetime;
+	mtpRequestId requestId = 0;
+	int generation = 0;
+	int exports = 0;
+	int passwordTries = 0;
+	bool waiting = false;
+	bool accepted = false;
+	bool password = false;
+	bool finishing = false;
+	bool authorized = false;
+	crl::time tokenAt = 0;
+};
+
+SyncPullState &SyncPull() {
+	static auto result = SyncPullState();
+	return result;
+}
+
+void SyncPullExport();
+void SyncPullPassword(bool wrong);
+void SyncPullStop(const QString &text);
+void SyncPullShowBox();
+
+QString SyncPullName(const QJsonObject &account) {
+	const auto name = account.value(u"name"_q).toString().trimmed();
+	const auto username = account.value(u"username"_q).toString().trimmed();
+	return !name.isEmpty()
+		? name
+		: !username.isEmpty()
+		? (u"@"_q + username)
+		: (u"аккаунт "_q + account.value(u"id"_q).toString());
+}
+
+QJsonObject SyncPullCandidate(int *left = nullptr) {
+	auto &state = SyncPull();
+	auto result = QJsonObject();
+	auto count = 0;
+	for (const auto &value : state.offered) {
+		const auto account = value.toObject();
+		const auto id = account.value(u"id"_q).toString();
+		if (id.isEmpty() || state.tried.contains(id) || SyncFindAccount(id)) {
+			continue;
+		}
+		if (!count++) {
+			result = account;
+		}
+	}
+	if (left) {
+		*left = count;
+	}
+	return result;
+}
+
+// Убирает текущий аккаунт из работы. forget — вход не состоялся: пустой аккаунт не оставляем.
+void SyncPullClear(bool forget) {
+	auto &state = SyncPull();
+	++state.generation;
+	state.lifetime.destroy();
+	const auto account = state.account.get();
+	if (const auto api = base::take(state.api)) {
+		if (account) {
+			// Не из своего же ответа; если аккаунта уже нет — запросы умерли вместе с ним.
+			crl::on_main(account, [=] { delete api; });
+		}
+	}
+	if (forget && account && !account->sessionExists()) {
+		if (state.authorized) {
+			account->logOut();
+		}
+		if (Core::App().domain().active().sessionExists()) {
+			crl::on_main(&Core::App(), [] {
+				Core::App().domain().removeRedundantAccounts();
+			});
+		}
+	}
+	state.account = nullptr;
+	state.id.clear();
+	state.name.clear();
+	state.requestId = 0;
+	state.exports = 0;
+	state.passwordTries = 0;
+	state.waiting = false;
+	state.accepted = false;
+	state.password = false;
+	state.finishing = false;
+	state.authorized = false;
+}
+
+void SyncPullFail(const QString &why) {
+	auto &state = SyncPull();
+	if (state.id.isEmpty()) {
+		return;
+	}
+	state.failed.push_back(state.name + u" — "_q + why);
+	state.skip.push_back(state.id);
+	SyncPullClear(true);
+	state.nextAt = crl::now() + 5000;
+}
+
+void SyncPullCreate(const MTPUser &user, const QVector<MTPDialogFilter> &filters, bool tagsEnabled) {
+	auto &state = SyncPull();
+	const auto account = state.account.get();
+	if (!account || account->sessionExists()) {
+		SyncPullFail(u"вход прервался"_q);
+		return;
+	}
+	auto settings = std::make_unique<Main::SessionSettings>();
+	const auto hasFilters = ranges::contains(filters, mtpc_dialogFilter, &MTPDialogFilter::type);
+	settings->setDialogsFiltersEnabled(hasFilters);
+	account->createSession(user, std::move(settings));
+	account->local().enforceModernStorageIdBots();
+	account->local().writeMtpData();
+	auto &session = account->session();
+	session.data().chatsFilters().setPreloaded(filters, tagsEnabled);
+	if (hasFilters) {
+		session.saveSettingsDelayed();
+	}
+	account->appConfig().refresh();
+	Core::App().domain().local().writeAccounts();
+	Local::sync();
+
+	state.added.push_back(state.name);
+	SyncPullClear(false);
+	state.nextAt = crl::now() + 8000 + base::RandomIndex(6000);
+	ReportAccounts();
+	if (!Core::App().domain().active().sessionExists()) {
+		// Плюм был на экране входа — открываем первый перенесённый аккаунт.
+		const auto reopen = (state.box != nullptr);
+		Core::App().domain().activate(account);
+		if (reopen) {
+			base::call_delayed(1000, QCoreApplication::instance(), [] {
+				if (SyncPull().active && !SyncPull().box) {
+					SyncPullShowBox();
+				}
+			});
+		}
+	}
+}
+
+void SyncPullAuthorized(const MTPauth_Authorization &auth) {
+	auto &state = SyncPull();
+	state.authorized = true;
+	state.waiting = false;
+	state.password = false;
+	auth.match([&](const MTPDauth_authorization &data) {
+		const auto &user = data.vuser();
+		const auto expected = state.id.startsWith('t') ? state.id.mid(1) : state.id;
+		if (user.type() != mtpc_user
+			|| !user.c_user().is_self()
+			|| QString::number(user.c_user().vid().v) != expected) {
+			SyncPullFail(u"пришёл другой аккаунт"_q);
+			return;
+		} else if (SyncFindAccount(state.id)) {
+			SyncPullFail(u"уже открыт"_q);
+			return;
+		}
+		state.finishing = true;
+		const auto generation = state.generation;
+		const auto copy = user;
+		state.requestId = state.api->request(MTPmessages_GetDialogFilters(
+		)).done([=](const MTPmessages_DialogFilters &result) {
+			if (SyncPull().generation == generation) {
+				const auto &d = result.data();
+				SyncPullCreate(copy, d.vfilters().v, d.is_tags_enabled());
+			}
+		}).fail([=] {
+			if (SyncPull().generation == generation) {
+				SyncPullCreate(copy, QVector<MTPDialogFilter>(), false);
+			}
+		}).send();
+	}, [&](const MTPDauth_authorizationSignUpRequired &) {
+		SyncPullFail(u"аккаунт не найден"_q);
+	});
+}
+
+void SyncPullToken(const MTPauth_LoginToken &result) {
+	auto &state = SyncPull();
+	const auto generation = state.generation;
+	result.match([&](const MTPDauth_loginToken &data) {
+		state.waiting = true;
+		state.accepted = false;
+		state.tokenAt = crl::now();
+		SyncPost(u"token"_q, QJsonObject{
+			{ u"id"_q, state.id },
+			{ u"token"_q, QString::fromLatin1(data.vtoken().v.toBase64(QByteArray::Base64UrlEncoding)) },
+		}, nullptr);
+	}, [&](const MTPDauth_loginTokenMigrateTo &data) {
+		const auto dc = data.vdc_id().v;
+		state.api->instance().setMainDcId(dc);
+		state.requestId = state.api->request(MTPauth_ImportLoginToken(
+			data.vtoken()
+		)).done([=](const MTPauth_LoginToken &result) {
+			if (SyncPull().generation == generation) {
+				SyncPull().requestId = 0;
+				SyncPullToken(result);
+			}
+		}).fail([=](const MTP::Error &error) {
+			if (SyncPull().generation != generation) {
+				return;
+			}
+			SyncPull().requestId = 0;
+			if (error.type() == u"SESSION_PASSWORD_NEEDED"_q) {
+				SyncPullPassword(false);
+			} else {
+				SyncPullFail(error.type());
+			}
+		}).toDC(dc).send();
+	}, [&](const MTPDauth_loginTokenSuccess &data) {
+		SyncPullAuthorized(data.vauthorization());
+	});
+}
+
+void SyncPullExport() {
+	auto &state = SyncPull();
+	if (!state.api || !state.account || state.password || state.finishing) {
+		return;
+	} else if (++state.exports > kSyncExportsMax) {
+		SyncPullFail(u"устройство с аккаунтом не ответило"_q);
+		return;
+	}
+	const auto generation = state.generation;
+	state.api->request(base::take(state.requestId)).cancel();
+	state.waiting = false;
+	state.requestId = state.api->request(MTPauth_ExportLoginToken(
+		MTP_int(ApiId),
+		MTP_string(ApiHash),
+		MTP_vector<MTPlong>(0)
+	)).done([=](const MTPauth_LoginToken &result) {
+		if (SyncPull().generation == generation) {
+			SyncPull().requestId = 0;
+			SyncPullToken(result);
+		}
+	}).fail([=](const MTP::Error &error) {
+		if (SyncPull().generation != generation) {
+			return;
+		}
+		SyncPull().requestId = 0;
+		if (error.type() == u"SESSION_PASSWORD_NEEDED"_q) {
+			SyncPullPassword(false);
+		} else {
+			SyncPullFail(error.type());
+		}
+	}).send();
+}
+
+void SyncPullPasswordBox(const Core::CloudPasswordState &cloud, bool wrong) {
+	auto &state = SyncPull();
+	const auto window = Core::App().activePrimaryWindow();
+	if (!window) {
+		SyncPullFail(u"нужен облачный пароль"_q);
+		return;
+	}
+	const auto generation = state.generation;
+	const auto name = state.name;
+	window->activate();
+	window->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Облачный пароль"_q));
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			(wrong ? u"Пароль не подошёл. "_q : QString())
+				+ u"Аккаунт «"_q + name + u"» защищён облачным паролем Telegram. Введите его, "
+				u"чтобы открыть аккаунт на этом устройстве."_q
+				+ (cloud.hint.isEmpty() ? QString() : (u"\n\nПодсказка: "_q + cloud.hint)),
+			st::boxLabel));
+		const auto fieldRow = box->addRow(object_ptr<Ui::FixedHeightWidget>(
+			box,
+			st::defaultInputField.heightMin));
+		const auto field = Ui::CreateChild<Ui::PasswordInput>(
+			fieldRow,
+			st::defaultInputField,
+			rpl::single(u"Облачный пароль"_q));
+		fieldRow->widthValue() | rpl::on_next([=](int width) {
+			field->setGeometry(0, 0, width, st::defaultInputField.heightMin);
+		}, field->lifetime());
+		const auto decided = box->lifetime().make_state<bool>(false);
+		const auto submit = [=] {
+			auto &state = SyncPull();
+			if (state.generation != generation || !state.api) {
+				*decided = true;
+				box->closeBox();
+				return;
+			}
+			const auto password = field->getLastText().toUtf8();
+			if (password.isEmpty()) {
+				field->showError();
+				return;
+			}
+			const auto hash = Core::ComputeCloudPasswordHash(
+				cloud.mtp.request.algo,
+				bytes::make_span(password));
+			const auto check = Core::ComputeCloudPasswordCheck(cloud.mtp.request, hash);
+			if (!check) {
+				field->showError();
+				return;
+			}
+			*decided = true;
+			box->closeBox();
+			state.requestId = state.api->request(MTPauth_CheckPassword(
+				check.result
+			)).done([=](const MTPauth_Authorization &result) {
+				if (SyncPull().generation == generation) {
+					SyncPull().requestId = 0;
+					SyncPullAuthorized(result);
+				}
+			}).fail([=](const MTP::Error &error) {
+				if (SyncPull().generation != generation) {
+					return;
+				}
+				SyncPull().requestId = 0;
+				const auto &type = error.type();
+				if (type == u"PASSWORD_HASH_INVALID"_q || type == u"SRP_ID_INVALID"_q) {
+					SyncPullPassword(type == u"PASSWORD_HASH_INVALID"_q);
+				} else if (type.startsWith(u"FLOOD_WAIT"_q)) {
+					SyncPullFail(u"слишком много попыток пароля, позже"_q);
+				} else {
+					SyncPullFail(type);
+				}
+			}).handleFloodErrors().send();
+		};
+		QObject::connect(field, &Ui::MaskedInputField::submitted, box, submit);
+		box->setFocusCallback([=] { field->setFocus(); });
+		box->addButton(rpl::single(u"Войти"_q), submit);
+		box->addButton(rpl::single(u"Пропустить"_q), [=] { box->closeBox(); });
+		box->boxClosing() | rpl::on_next([=] {
+			if (!*decided && SyncPull().generation == generation) {
+				SyncPullFail(u"пропущен (облачный пароль)"_q);
+			}
+		}, box->lifetime());
+	}));
+}
+
+void SyncPullPassword(bool wrong) {
+	auto &state = SyncPull();
+	if (!state.api) {
+		return;
+	} else if (++state.passwordTries > kSyncPasswordTries) {
+		SyncPullFail(u"облачный пароль не подошёл"_q);
+		return;
+	}
+	state.authorized = true; // ключ уже привязан к аккаунту — при отказе выходим
+	state.password = true;
+	state.waiting = false;
+	const auto generation = state.generation;
+	state.requestId = state.api->request(MTPaccount_GetPassword(
+	)).done([=](const MTPaccount_Password &result) {
+		if (SyncPull().generation != generation) {
+			return;
+		}
+		SyncPull().requestId = 0;
+		result.match([&](const MTPDaccount_password &data) {
+			base::RandomAddSeed(bytes::make_span(data.vsecure_random().v));
+			const auto cloud = Core::ParseCloudPasswordState(data);
+			if (!cloud.mtp.request) {
+				SyncPullFail(u"облачный пароль этой версией не поддержан"_q);
+			} else {
+				SyncPullPasswordBox(cloud, wrong);
+			}
+		});
+	}).fail([=](const MTP::Error &error) {
+		if (SyncPull().generation == generation) {
+			SyncPull().requestId = 0;
+			SyncPullFail(error.type());
+		}
+	}).send();
+}
+
+void SyncPullUpdates(const MTPUpdates &updates) {
+	const auto check = [](const MTPUpdate &update) {
+		if (update.type() == mtpc_updateLoginToken && SyncPull().waiting) {
+			const auto generation = SyncPull().generation;
+			crl::on_main(QCoreApplication::instance(), [=] {
+				auto &state = SyncPull();
+				if (state.generation == generation && state.waiting) {
+					state.accepted = true;
+					SyncPullExport();
+				}
+			});
+		}
+	};
+	updates.match([&](const MTPDupdateShort &data) {
+		check(data.vupdate());
+	}, [&](const MTPDupdates &data) {
+		for (const auto &update : data.vupdates().v) {
+			check(update);
+		}
+	}, [&](const MTPDupdatesCombined &data) {
+		for (const auto &update : data.vupdates().v) {
+			check(update);
+		}
+	}, [](const auto &) {});
+}
+
+void SyncPullNext() {
+	auto &state = SyncPull();
+	auto left = 0;
+	const auto candidate = SyncPullCandidate(&left);
+	if (candidate.isEmpty()) {
+		return;
+	}
+	const auto id = candidate.value(u"id"_q).toString();
+	const auto environment = id.startsWith('t')
+		? MTP::Environment::Test
+		: MTP::Environment::Production;
+	auto &domain = Core::App().domain();
+	auto account = (Main::Account*)nullptr;
+	for (const auto &[index, existing] : domain.accounts()) {
+		// Пустой аккаунт, оставшийся от неудачной попытки на экране входа.
+		if (!existing->sessionExists()
+			&& existing.get() != &domain.active()
+			&& existing->mtp().environment() == environment
+			&& !Core::App().separateWindowFor(not_null(existing.get()))) {
+			account = existing.get();
+			break;
+		}
+	}
+	if (!account) {
+		if (domain.accounts().size() >= Main::Domain::kPremiumMaxAccounts) {
+			SyncPullStop(u"Больше аккаунтов не помещается (до 30)."_q);
+			return;
+		}
+		account = domain.add(environment);
+	}
+	state.tried.emplace(id);
+	state.id = id;
+	state.name = SyncPullName(candidate);
+	state.account = account;
+	state.api = new MTP::Sender(&account->mtp());
+	const auto number = int(state.added.size() + state.failed.size()) + 1;
+	state.text = u"Подтягиваю: "_q + state.name + u" ("_q + QString::number(number) + u" из "_q
+		+ QString::number(number + left - 1) + u")…"_q;
+	if (state.silent && !state.box) {
+		if (const auto window = Core::App().activePrimaryWindow()) {
+			window->showToast(u"Подтягиваю аккаунт с другого устройства: "_q + state.name);
+		}
+	}
+	account->mtpUpdates(
+	) | rpl::on_next([](const MTPUpdates &updates) {
+		SyncPullUpdates(updates);
+	}, state.lifetime);
+	SyncPullExport();
+}
+
+QString SyncPullSummary() {
+	const auto &state = SyncPull();
+	auto result = QString();
+	if (!state.added.isEmpty()) {
+		result += u"Добавлено аккаунтов: "_q + QString::number(state.added.size()) + u"."_q;
+	}
+	if (!state.failed.isEmpty()) {
+		result += (result.isEmpty() ? QString() : u"\n\n"_q) + u"Не подтянулись:\n• "_q
+			+ state.failed.join(u"\n• "_q);
+	}
+	return result;
+}
+
+void SyncPullStop(const QString &text) {
+	auto &state = SyncPull();
+	if (!state.active) {
+		return;
+	}
+	state.active = false;
+	if (state.timer) {
+		state.timer->stop();
+	}
+	if (!state.id.isEmpty()) {
+		SyncPullClear(true);
+	}
+	SyncPost(u"ask"_q, QJsonObject{
+		{ u"cancel"_q, true },
+	}, nullptr);
+	if (!state.skip.isEmpty()) {
+		// Не подтянулись — больше сами не пробуем (кнопка «Аккаунты с других устройств» — ещё раз).
+		SyncPost(u"ask"_q, QJsonObject{
+			{ u"have"_q, SyncHave() },
+			{ u"skip"_q, state.skip },
+		}, nullptr);
+	}
+	const auto summary = SyncPullSummary();
+	const auto full = state.silent
+		? summary
+		: (text + ((text.isEmpty() || summary.isEmpty()) ? QString() : u"\n\n"_q) + summary);
+	state.title = u"Аккаунты с других устройств"_q;
+	state.text = full;
+	if (!state.box && !full.isEmpty()) {
+		if (const auto window = Core::App().activePrimaryWindow()) {
+			window->showToast(full);
+		}
+	}
+}
+
+void SyncPullAnswer(int status, const QJsonObject &json) {
+	auto &state = SyncPull();
+	if (!state.active) {
+		return;
+	} else if (json.value(u"error"_q).toString() == u"login"_q) {
+		SyncPullStop(u"Нужно снова войти паролем Плюма — нажмите «Аккаунты с других устройств»."_q);
+		return;
+	} else if (status != 200) {
+		if (status == 401) {
+			SyncPullStop(u"В этом Плюме нет ключа доступа — обновите Плюм."_q);
+		} else if (++state.errors >= 12 || state.silent) {
+			SyncPullStop(u"Нет связи с сервером Плюма."_q);
+		}
+		return;
+	}
+	state.errors = 0;
+	const auto now = crl::now();
+	state.offered = json.value(u"accounts"_q).toArray();
+	const auto online = json.value(u"online"_q).toBool();
+	if (!state.id.isEmpty()) {
+		const auto answer = json.value(u"results"_q).toObject().value(state.id).toString();
+		if (!state.waiting || answer.isEmpty()) {
+			return;
+		} else if (answer != u"ok"_q) {
+			SyncPullFail(answer);
+		} else if (!state.accepted) {
+			// Подтверждено, а обновление от Telegram не пришло — спрашиваем сами.
+			state.accepted = true;
+			SyncPullExport();
+		}
+		return;
+	}
+	auto left = 0;
+	SyncPullCandidate(&left);
+	if (left) {
+		if (now >= state.nextAt) {
+			SyncPullNext();
+		}
+	} else if (online || state.silent || !state.added.isEmpty() || !state.failed.isEmpty()) {
+		SyncPullStop((state.added.isEmpty() && state.failed.isEmpty())
+			? u"Все аккаунты с других устройств уже здесь."_q
+			: u"Готово."_q);
+	} else if (now - state.startedAt > 60 * 1000) {
+		SyncPullStop(u"Другие устройства не в сети. Откройте Плюм там, где аккаунты уже есть, — "
+			u"они подтянутся сюда сами."_q);
+	} else {
+		state.text = u"Ищу аккаунты на других устройствах… Откройте Плюм там, где они уже есть."_q;
+	}
+}
+
+void SyncPullTick() {
+	auto &state = SyncPull();
+	if (!state.active) {
+		return;
+	}
+	if (!state.id.isEmpty() && !state.password && !state.finishing) {
+		if (!state.account) {
+			SyncPullFail(u"вход прервался"_q);
+		} else if (state.waiting && crl::now() - state.tokenAt > kSyncTokenWait) {
+			SyncPullExport();
+		}
+	}
+	if (state.asking) {
+		return;
+	}
+	state.asking = true;
+	const auto generation = state.startedAt;
+	SyncPost(u"ask"_q, QJsonObject{
+		{ u"device"_q, SyncDevice() },
+		{ u"platform"_q, SyncPlatform() },
+		{ u"have"_q, SyncHave() },
+		{ u"all"_q, state.all },
+	}, [=](int status, QJsonObject json) {
+		auto &state = SyncPull();
+		state.asking = false;
+		if (state.startedAt == generation) {
+			SyncPullAnswer(status, json);
+		}
+	});
+}
+
+// silent — тихая проверка раз в минуту (окно не показываем); all — подтянуть и то, из чего здесь выходили.
+void SyncPullStart(bool silent, bool all) {
+	auto &state = SyncPull();
+	if (state.active) {
+		if (!silent) {
+			state.silent = false;
+			state.all = state.all || all;
+		}
+		return;
+	} else if (SyncSecret().isEmpty()) {
+		return;
+	}
+	state.active = true;
+	state.silent = silent;
+	state.all = all;
+	state.errors = 0;
+	state.startedAt = crl::now();
+	state.offered = QJsonArray();
+	state.tried.clear();
+	state.skip = QJsonArray();
+	state.added.clear();
+	state.failed.clear();
+	state.nextAt = 0;
+	state.asking = false;
+	state.title = u"Аккаунты с других устройств"_q;
+	state.text = u"Ищу аккаунты на других устройствах…"_q;
+	if (!state.timer) {
+		state.timer = new QTimer(QCoreApplication::instance());
+		QObject::connect(state.timer, &QTimer::timeout, [] { SyncPullTick(); });
+	}
+	state.timer->start(kSyncTick);
+	SyncPullTick();
+}
+
+void SyncPullShowBox() {
+	const auto window = Core::App().activePrimaryWindow();
+	if (!window) {
+		return;
+	}
+	window->show(Box([](not_null<Ui::GenericBox*> box) {
+		auto &state = SyncPull();
+		state.box = box.get();
+		box->setTitle(state.title.value());
+		box->addRow(object_ptr<Ui::FlatLabel>(box, state.text.value(), st::boxLabel));
+		// Закрыть — перенос продолжается сам, итог придёт уведомлением.
+		box->addButton(rpl::single(u"Закрыть"_q), [=] { box->closeBox(); });
+		box->addButton(rpl::single(u"Остановить"_q), [=] {
+			SyncPullStop(u"Остановлено."_q);
+			box->closeBox();
+		});
+	}));
+}
+
+// Один раз на устройстве: пароль Плюма (тот же, что на сайте Плюма). Дальше всё само.
+void SyncLoginBox(Fn<void()> done) {
+	const auto window = Core::App().activePrimaryWindow();
+	if (!window) {
+		return;
+	}
+	window->activate();
+	window->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Аккаунты на всех устройствах"_q));
+		const auto text = box->lifetime().make_state<rpl::variable<QString>>(
+			u"Войдите паролем Плюма один раз. Дальше аккаунты Telegram сами подтягиваются сюда "
+			u"с других ваших устройств — и отсюда туда. Без кодов и подтверждений."_q);
+		box->addRow(object_ptr<Ui::FlatLabel>(box, text->value(), st::boxLabel));
+		const auto fieldRow = box->addRow(object_ptr<Ui::FixedHeightWidget>(
+			box,
+			st::defaultInputField.heightMin));
+		const auto field = Ui::CreateChild<Ui::PasswordInput>(
+			fieldRow,
+			st::defaultInputField,
+			rpl::single(u"Пароль Плюма"_q));
+		fieldRow->widthValue() | rpl::on_next([=](int width) {
+			field->setGeometry(0, 0, width, st::defaultInputField.heightMin);
+		}, field->lifetime());
+		const auto sending = box->lifetime().make_state<bool>(false);
+		const auto weak = QPointer<Ui::GenericBox>(box.get());
+		const auto submit = [=] {
+			const auto password = field->getLastText().trimmed();
+			if (password.isEmpty()) {
+				field->showError();
+				return;
+			} else if (*sending) {
+				return;
+			}
+			*sending = true;
+			SyncPost(u"login"_q, QJsonObject{
+				{ u"password"_q, password },
+				{ u"device"_q, SyncDevice() },
+				{ u"platform"_q, SyncPlatform() },
+			}, [=](int status, QJsonObject json) {
+				const auto secret = json.value(u"secret"_q).toString();
+				if (!secret.isEmpty()) {
+					SetState(u"syncSecret"_q, secret);
+					if (weak) {
+						weak->closeBox();
+					}
+					SyncDonorPoll();
+					if (done) {
+						done();
+					}
+					return;
+				} else if (!weak) {
+					return;
+				}
+				*sending = false;
+				const auto error = json.value(u"error"_q).toString();
+				*text = (error.isEmpty() ? u"Нет связи с сервером Плюма."_q : error)
+					+ u" Попробуйте ещё раз."_q;
+				field->showError();
+			});
+		};
+		QObject::connect(field, &Ui::MaskedInputField::submitted, box, submit);
+		box->setFocusCallback([=] { field->setFocus(); });
+		box->addButton(rpl::single(u"Войти"_q), submit);
+		box->addButton(rpl::single(u"Отмена"_q), [=] { box->closeBox(); });
+	}));
+}
+
+} // namespace
+
+void StartAccountSync() {
+	auto &donor = SyncDonor();
+	if (donor.timer) {
+		return;
+	}
+	donor.timer = new QTimer(QCoreApplication::instance());
+	donor.timer->setSingleShot(true);
+	QObject::connect(donor.timer, &QTimer::timeout, [] { SyncDonorPoll(); });
+	donor.timer->start(8000);
+	// Раз в минуту: нет ли на других устройствах новых аккаунтов — подтягиваем сами.
+	donor.check = new QTimer(QCoreApplication::instance());
+	QObject::connect(donor.check, &QTimer::timeout, [] {
+		if (!Core::App().passcodeLocked()) {
+			SyncPullStart(true, false);
+		}
+	});
+	donor.check->start(kSyncCheck);
+	base::call_delayed(12000, QCoreApplication::instance(), [] {
+		if (!Core::App().passcodeLocked()) {
+			SyncPullStart(true, false);
+		}
+	});
+}
+
+void ShowAccountSync() {
+	const auto start = [] {
+		SyncPullStart(false, true);
+		SyncPullShowBox();
+	};
+	if (SyncSecret().isEmpty()) {
+		SyncLoginBox(start);
+	} else {
+		start();
+	}
 }
 
 } // namespace TgLite
