@@ -65,7 +65,7 @@ dialogsCommunityRequestsBubbleTextSkip: 48px;
 dialogsCommunityRequestsBubbleRightInset: 9px;
 dialogsCommunityRequestsBubbleRadius: 11px;
 
-plumeNavigationHeight: 96px;
+plumeNavigationHeight: 64px;
 plumeNavigationMargin: 8px;
 plumeNavigationGap: 4px;
 plumeNavigationHeaderHeight: 28px;

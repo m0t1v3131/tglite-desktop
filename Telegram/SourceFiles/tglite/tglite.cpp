@@ -4167,6 +4167,7 @@ void ShowPlumeBox(not_null<Window::SessionController*> controller) {
 			SetMuteAll(controller, on);
 		}, mute->lifetime());
 		section(u"Приложение"_q);
+		add(u"Маяк"_q, [=] { OpenMayak(controller); });
 		const auto settings = box->addRow(object_ptr<Ui::SettingsButton>(
 			box,
 			UpdateReadyValue() | rpl::map([](bool ready) {

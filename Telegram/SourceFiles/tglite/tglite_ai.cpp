@@ -4375,25 +4375,14 @@ private:
 Ui::RpWidget *CreatePlumeNavigation(
 		not_null<QWidget*> parent,
 		not_null<Window::SessionController*> controller) {
+	// PLUME-HOME-TIDY: один ряд вместо заголовка «Плюм ›» и кнопок Маяк/Штаб/Луч в шапке.
 	const auto result = new Ui::RpWidget(parent);
 	result->setObjectName(u"plumeNavigation"_q);
 	result->resize(0, st::plumeNavigationHeight);
-	const auto layout = new QVBoxLayout(result);
-	layout->setContentsMargins(st::plumeNavigationMargin, st::plumeNavigationGap,
+	const auto shortcuts = new QHBoxLayout(result);
+	shortcuts->setContentsMargins(st::plumeNavigationMargin, st::plumeNavigationGap,
 		st::plumeNavigationMargin, st::plumeNavigationMargin);
-	layout->setSpacing(st::plumeNavigationGap);
-	const auto center = new QPushButton(u"Плюм  ›"_q, result);
-	center->setObjectName(u"plumeCenter"_q);
-	center->setCursor(style::cur_pointer);
-	center->setFixedHeight(st::plumeNavigationHeaderHeight);
-	center->setFont(st::semiboldFont->f);
-	layout->addWidget(center);
-	QObject::connect(center, &QPushButton::clicked, result, [=] {
-		ShowPlumeBox(controller);
-	});
-	const auto shortcuts = new QHBoxLayout();
 	shortcuts->setSpacing(st::plumeNavigationGap);
-	layout->addLayout(shortcuts, 1);
 	const auto add = [&](const QString &text, const style::icon &icon, Fn<void()> click, bool isHighlighted = false) {
 		const auto button = new PlumeNavigationButton(result, text, icon, isHighlighted);
 		shortcuts->addWidget(button, 1);
@@ -4414,26 +4403,24 @@ Ui::RpWidget *CreatePlumeNavigation(
 	add(u"Ждут меня"_q, st::menuIconReply,
 		[=] { ShowWaitingList(controller, true); })
 		->setToolTip(u"Люди, которым вы ещё не ответили"_q);
-	add(u"Сводка"_q, st::menuIconDiscussion,
-		[=] { RequestDigest(controller); })
-		->setToolTip(u"Собрать сводку сейчас"_q);
+	add(u"Штаб"_q, st::menuIconGroups,
+		[=] { OpenShtab(controller); })
+		->setToolTip(u"Штаб: все люди"_q);
+	add(u"Луч"_q, st::menuIconPlumeMayak,
+		[=] { OpenLuch(controller); })
+		->setToolTip(u"Луч: личный помощник"_q);
+	const auto center = add(u"Плюм"_q, st::menuIconCustomize,
+		[=] { ShowPlumeBox(controller); });
 	UpdateReadyValue() | rpl::on_next([=](bool ready) {
-		center->setText(ready ? u"Плюм  •  ›"_q : u"Плюм  ›"_q);
+		center->setHasNew(ready);
 		center->setToolTip(ready
 			? u"Плюм · накопились обновления"_q
-			: u"Плюм · помощник, порядок в чатах и настройки"_q);
+			: u"Плюм · сводка, Маяк, разбор чатов и настройки"_q);
 		center->setAccessibleName(center->toolTip());
 	}, result->lifetime());
-	const auto refresh = [=] {
-		center->setStyleSheet(u"QPushButton { background: transparent; color: %1; "
-			"border: none; border-radius: %2px; text-align: left; padding-left: %3px; } "
-			"QPushButton:hover, QPushButton:focus { background: %4; }"_q
-			.arg(Hex(st::lightButtonFg)).arg(st::plumeNavigationRadius)
-			.arg(st::plumeNavigationMargin).arg(Hex(st::windowBgOver)));
+	style::PaletteChanged() | rpl::on_next([=] {
 		result->update();
-	};
-	refresh();
-	style::PaletteChanged() | rpl::on_next(refresh, result->lifetime());
+	}, result->lifetime());
 	return result;
 }
 

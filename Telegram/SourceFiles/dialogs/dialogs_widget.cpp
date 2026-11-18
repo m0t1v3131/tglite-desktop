@@ -691,15 +691,7 @@ Widget::Widget(
 		_plumeNavigation = object_ptr<Ui::RpWidget>::fromRaw(
 			TgLite::CreatePlumeNavigation(_searchControls, controller));
 		_plumeNavigation->show();
-		_mayak = object_ptr<Ui::AbstractButton>::fromRaw(
-			TgLite::CreateMayakButton(_searchControls, controller));
-		_mayak->show();
-		_shtab = object_ptr<Ui::AbstractButton>::fromRaw(
-			TgLite::CreateShtabButton(_searchControls, controller));
-		_shtab->show();
-		_luch = object_ptr<Ui::AbstractButton>::fromRaw(
-			TgLite::CreateLuchButton(_searchControls, controller));
-		_luch->show();
+		// PLUME-HOME-TIDY: Маяк, Штаб и Луч — в ряду Плюма и окне «Плюм», не в шапке.
 		_plumeQuiet = object_ptr<Ui::RpWidget>::fromRaw(
 			TgLite::CreateQuietList(this, controller));
 	}
