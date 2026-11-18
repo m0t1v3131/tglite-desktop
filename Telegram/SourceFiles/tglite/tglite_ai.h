@@ -65,6 +65,8 @@ void ShowAssistantForChat(
 // Маяк внутри Плюма: мини-приложение бота @mayak52_bot (mayak.amdiveev.ru, вход по Telegram без пароля).
 void OpenMayak(not_null<Window::SessionController*> controller);
 void OpenShtab(not_null<Window::SessionController*> controller);
+// Луч — личный помощник владельца в Маяке (mayak.amdiveev.ru/luch): мини-приложение бота Маяка.
+void OpenLuch(not_null<Window::SessionController*> controller);
 // «В Маяк» у сообщения: новый чат в Маяке с этим сообщением (и его фото/файлом) — сообщением «чат: …» своему боту.
 void ShowSendToMayak(
 	not_null<Window::SessionController*> controller,
@@ -72,6 +74,9 @@ void ShowSendToMayak(
 // Бот Маяка, если он уже загружен; иначе nullptr (и подгружает его на следующий раз).
 [[nodiscard]] UserData *MayakBot(not_null<Main::Session*> session);
 // Круглая кнопка-маяк рядом с «Помощником» над чатами.
+[[nodiscard]] Ui::AbstractButton *CreateLuchButton(
+	not_null<QWidget*> parent,
+	not_null<Window::SessionController*> controller);
 [[nodiscard]] Ui::AbstractButton *CreateShtabButton(
 	not_null<QWidget*> parent,
 	not_null<Window::SessionController*> controller);

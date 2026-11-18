@@ -349,6 +349,7 @@ private:
 	object_ptr<Ui::RpWidget> _plumeNavigation = { nullptr }; // Плюм: быстрые разделы над папками
 	object_ptr<Ui::AbstractButton> _mayak = { nullptr }; // Plume: кнопка «Маяк»
 	object_ptr<Ui::AbstractButton> _shtab = { nullptr }; // Плюм: кнопка «Штаб»
+	object_ptr<Ui::AbstractButton> _luch = { nullptr }; // Плюм: кнопка «Луч»
 	object_ptr<Ui::RpWidget> _plumeQuiet = { nullptr }; // Плюм: «Свои» на месте списка чатов
 
 	std::unique_ptr<Ui::MoreChatsBar> _moreChatsBar;
